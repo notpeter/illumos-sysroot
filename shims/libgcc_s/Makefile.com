@@ -17,18 +17,22 @@ LDFLAGS = -G -s -h libgcc_s.so.1
 COMMON = ../common
 MAPFILE = $(COMMON)/mapfile.shim
 MAPFILE_VERSION = mapfile.version
+VERSION_STAMP = .version-$(VERSION)
 
 VERSTRING = VER_$(VERSION)
 
 %.o: $(COMMON)/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $<
 
-$(LIB): $(OBJECTS) $(MAPFILE)
+$(VERSION_STAMP):
+	rm -f .version-*
+	touch $@
+
+$(LIB): $(OBJECTS) $(MAPFILE) $(VERSION_STAMP)
 	sh -c 'echo "\$$mapfile_version 2\n\$$add $(VERSTRING)" > $(MAPFILE_VERSION)'
 	$(LD) $(LDFLAGS) -M $(MAPFILE_VERSION) -M $(MAPFILE) -o $@ $(OBJECTS)
 
 
 .PHONY: clean
 clean:
-	rm -f $(OBJECTS) $(LIB) $(MAPFILE_VERSION)
-
+	rm -f $(OBJECTS) $(LIB) $(MAPFILE_VERSION) .version-*

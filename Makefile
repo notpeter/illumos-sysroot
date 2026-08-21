@@ -5,27 +5,38 @@
 MACH =			i386
 MACH64 =		amd64
 
-OUTPUT =		output
-TARBASE =		illumos-sysroot-$(MACH)
-TARVERSION =		custom-v$(shell date +%Y%m%d-%H%M%S)
-TARFILE =		$(OUTPUT)/$(TARBASE)-$(TARVERSION).tar
+PROFILES =		$(wildcard profiles/*.mk)
+AVAILABLE_RELEASES =	$(patsubst profiles/%.mk,%,$(PROFILES))
+
+ifneq ($(RELEASE),)
+PROFILE =		profiles/$(RELEASE).mk
+ifeq ($(wildcard $(PROFILE)),)
+$(error unknown RELEASE "$(RELEASE)" (available: $(AVAILABLE_RELEASES)))
+endif
+include $(PROFILE)
+endif
+
+OUTPUT ?=		output
+TARBASE ?=		illumos-sysroot-$(MACH)
+TARVERSION ?=		custom-v$(shell date +%Y%m%d-%H%M%S)
+TARFILE ?=		$(OUTPUT)/$(TARBASE)-$(TARVERSION).tar
 
 #
 # When producing the official archive, override TARVERSION; e.g.
 #	gmake archive TARVERSION=de6af22ae73b-20181213-v1
 #
 
-USRLIB =		usr/lib
-USRLIB64 =		usr/lib/$(MACH64)
+USRLIB ?=		usr/lib
+USRLIB64 ?=		usr/lib/$(MACH64)
 
-MF2TAR =		$(PWD)/mf2tar/target/release/mf2tar
+MF2TAR ?=		$(PWD)/mf2tar/target/release/mf2tar
 
 #
 # A list of IPS packages to include in the sysroot archive.  Note that no
 # dependency resolution is done, so if you need the dependencies for an
 # included package you must enumerate them explicitly here as well.
 #
-INCLUDE_PACKAGES =	system/header \
+INCLUDE_PACKAGES ?=	system/header \
 			system/library \
 			system/library/math \
 			system/library/c-runtime
@@ -36,7 +47,7 @@ INCLUDE_PACKAGES =	system/header \
 # things other than just headers and libraries, in order to keep the size of
 # the sysroot archive down.
 #
-EXCLUDE_DIRS =		usr/share \
+EXCLUDE_DIRS ?=		usr/share \
 			etc \
 			var \
 			usr/bin \
@@ -44,6 +55,8 @@ EXCLUDE_DIRS =		usr/share \
 			usr/ccs \
 			sbin \
 			bin
+
+LIBGCC_VERSION ?=	4_8_0
 
 #
 # Shim libraries that we generate for artefacts that come from consolidations
@@ -64,7 +77,7 @@ all: archive
 shims: $(SHIM_TARGETS)
 
 $(LIBGCC_32) $(LIBGCC_64):
-	$(MAKE) -C shims/libgcc_s
+	$(MAKE) -C shims/libgcc_s VERSION=$(LIBGCC_VERSION)
 
 $(LIBSSP_32) $(LIBSSP_64):
 	$(MAKE) -C shims/libssp
@@ -76,13 +89,31 @@ $(MF2TAR):
 $(OUTPUT):
 	mkdir -p $@
 
-.PHONY: archive
-archive: $(SHIM_TARGETS) | $(OUTPUT) $(MF2TAR)
-	@if [[ -z "$(ILLUMOS_PKGREPO)" || \
-		! -f "$(ILLUMOS_PKGREPO)/cfg_cache" ]]; then \
-		printf 'ERROR: specify valid ILLUMOS_PKGREPO location\n' >&2; \
+.PHONY: check-pkgrepo
+check-pkgrepo:
+	@if [ -z "$(ILLUMOS_PKGREPO)" ] || \
+		[ ! -d "$(ILLUMOS_PKGREPO)/file" ] || \
+		[ ! -d "$(ILLUMOS_PKGREPO)/pkg" ]; then \
+		printf 'ERROR: specify valid ILLUMOS_PKGREPO location with file/ and pkg/ directories\n' >&2; \
 		exit 1; \
 	fi
+
+.PHONY: ident
+ident:
+	@printf 'release: %s\n' '$(if $(RELEASE),$(RELEASE),(none: custom build))'
+	@printf 'tarversion: %s\n' '$(TARVERSION)'
+	@printf 'gate branch: %s\n' '$(if $(GATE_BRANCH),$(GATE_BRANCH),(none))'
+	@printf 'gate commit: %s\n' '$(if $(GATE_COMMIT),$(GATE_COMMIT),(none))'
+	@printf 'build host: %s\n' '$(if $(BUILD_HOST),$(BUILD_HOST),(unspecified))'
+	@printf 'libgcc_s version: %s\n' '$(LIBGCC_VERSION)'
+	@printf 'packages: %s\n' '$(INCLUDE_PACKAGES)'
+
+.PHONY: print-packages
+print-packages:
+	@printf '%s\n' $(INCLUDE_PACKAGES)
+
+.PHONY: archive
+archive: check-pkgrepo $(SHIM_TARGETS) | $(OUTPUT) $(MF2TAR)
 	$(MF2TAR) \
 	    --repository $(ILLUMOS_PKGREPO) \
 	    $(addprefix -P ,$(INCLUDE_PACKAGES)) \

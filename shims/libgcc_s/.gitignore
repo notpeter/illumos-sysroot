@@ -1,3 +1,4 @@
 *.o
 mapfile.version
 libgcc_s.so.1
+.version-*

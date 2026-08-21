@@ -1,0 +1,57 @@
+name: OmniOS archive
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    name: Assemble sysroot on OmniOS r151046
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build archive in OmniOS
+        uses: vmactions/omnios-vm@v1
+        with:
+          release: r151046
+          mem: 8192
+          cpu: 4
+          cache-after-prepare: true
+          prepare: |
+            pkg set-publisher -g https://pkg.omnios.org/r151046/extra extra.omnios
+            pkg install --accept \
+              developer/build/gnu-make \
+              developer/gcc10 \
+              ooce/developer/rust
+          run: |
+            set -eu
+            export PATH=/opt/ooce/bin:/opt/gcc-10/bin:$PATH
+
+            repo="$PWD/.sysroot-ci/repo"
+            pkgroot=$(RELEASE=20231226 scripts/receive-installed-packages.sh "$repo")
+
+            gmake archive RELEASE=20231226 ILLUMOS_PKGREPO="$pkgroot"
+
+            archive=output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz
+            test -s "$archive"
+            gzip -dc "$archive" | tar tf - > output/tar.list
+
+            grep -Eq '^usr/include/?$' output/tar.list
+            grep -Eq '^usr/lib/libgcc_s\.so\.1( |$)' output/tar.list
+            grep -Eq '^usr/lib/amd64/libgcc_s\.so\.1( |$)' output/tar.list
+            grep -Eq '^usr/lib/libssp\.so\.0\.0\.0( |$)' output/tar.list
+            grep -Eq '^usr/lib/amd64/libssp\.so\.0\.0\.0( |$)' output/tar.list
+            ! grep -Eq '^(usr/bin|etc|var|bin|sbin|usr/sbin|usr/share|usr/ccs)(/|$)' output/tar.list
+
+            pvs -dsv shims/libgcc_s/i386/libgcc_s.so.1 | grep GCC_4.8.0
+            pvs -dsv shims/libgcc_s/amd64/libgcc_s.so.1 | grep GCC_4.8.0
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: illumos-sysroot-20231226-smoke
+          path: |
+            output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz
+            output/tar.list
