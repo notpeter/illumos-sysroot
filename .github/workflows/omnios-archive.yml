@@ -16,17 +16,17 @@ jobs:
     runs-on: ubuntu-latest
     name: Assemble sysroot on OmniOS r151046
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build archive in OmniOS
         uses: vmactions/omnios-vm@v1
         with:
           release: r151046
-          mem: 8192
-          cpu: 4
           cache-after-prepare: true
           prepare: |
-            pkg set-publisher -g https://pkg.omnios.org/r151046/extra extra.omnios
+            pkg publisher extra.omnios >/dev/null 2>&1 || \
+              pkg set-publisher -g https://pkg.omnios.org/r151046/extra extra.omnios
+            pkg refresh extra.omnios
             pkg install --accept \
               developer/build/gnu-make \
               developer/gcc10 \
@@ -68,7 +68,7 @@ jobs:
     name: Build illumos-gate sysroot on OmniOS r151046
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build illumos-gate and archive in OmniOS
         uses: vmactions/omnios-vm@v1
@@ -77,8 +77,9 @@ jobs:
           sync: rsync
           cache-after-prepare: true
           prepare: |
-            pkg set-publisher -g https://pkg.omnios.org/r151046/extra extra.omnios
-            pkg refresh --full
+            pkg publisher extra.omnios >/dev/null 2>&1 || \
+              pkg set-publisher -g https://pkg.omnios.org/r151046/extra extra.omnios
+            pkg refresh extra.omnios
             pkg install --accept \
               developer/build/onbld \
               developer/gcc10 \
