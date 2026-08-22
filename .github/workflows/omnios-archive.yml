@@ -76,7 +76,8 @@ jobs:
           cache-after-prepare: true
           run: |
             set -eu
-            scripts/archive-omnios-build-env.sh .sysroot-ci/build-env \
+            OMNIOS_ARCHIVE_WORKDIR="$PWD/.sysroot-ci/work" \
+              scripts/archive-omnios-build-env.sh .sysroot-ci/build-env \
               developer/build/onbld \
               developer/gcc10 \
               developer/build/gnu-make \

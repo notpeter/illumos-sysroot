@@ -99,22 +99,20 @@ changed to consume a `repo.redist` produced from illumos-gate commit
 For full illumos-gate builds, the workflow uses a two-stage OmniOS package
 setup:
 
-1. `build-env` boots OmniOS with live package access, installs the build
-   packages, records the exact FMRIs installed, and preserves those payloads in
-   `.p5p` IPS package archives.
+1. `build-env` boots OmniOS with live package access, creates a clean
+   temporary IPS image, installs the build packages into that image, records
+   the complete installed FMRI closure, and preserves those payloads in `.p5p`
+   IPS package archives.
 2. `full-gate-build` downloads those package archives, removes live publisher
-   origins from the VM image, installs the exact FMRIs from the local archives,
+   origins from the VM image, installs the exact FMRI closure from the local archives,
    and verifies the requested package FMRIs before building.
 
 This keeps the release build from depending on live OmniOS package repositories
 after the package archive artifact has been generated.
 
-The archived payloads are the requested build packages plus packages that were
-newly installed while preparing the matching vmactions base image.  They are
-therefore sufficient to replay the build package installation on the same base
-VM image without live package repositories.  They are not yet a complete
-standalone dependency closure for installing the build environment into an
-empty IPS image.
+The archived payloads are verified by creating another temporary IPS image and
+dry-running an install of the archived FMRI closure using only the generated
+package archives.
 
 The package archive artifact includes:
 
@@ -122,17 +120,16 @@ The package archive artifact includes:
 * `omnios-r151046-extra.p5p`
 * `install.fmris`
 * `requested.fmris`
-* `changed.fmris`
-* before/after installed package lists
+* `host-installed.fmris`
+* `scratch-publishers.txt`
+* `replay-verify.txt`
 * package archive package lists and manifests
 * `SHA256SUMS`
 
 This does not yet make the entire VM run offline.  The workflow still relies on
 GitHub/vmactions to provide the VM image and source checkout, the builder still
 fetches illumos-gate from Git, and `mf2tar` still uses Cargo normally.  Cargo
-dependency vendoring is intentionally out of scope for now.  A future stronger
-mode should preserve either the full installed image package set or a computed
-cross-publisher dependency closure.
+dependency vendoring is intentionally out of scope for now.
 
 ## Remaining official release work
 

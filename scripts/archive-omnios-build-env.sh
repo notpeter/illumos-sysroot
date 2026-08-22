@@ -1,7 +1,8 @@
 #!/bin/sh
 #
-# Install the requested OmniOS build packages and preserve the exact package
-# payloads needed to replay that installation from local IPS archives.
+# Resolve the requested OmniOS build packages in a clean IPS image and preserve
+# the exact package payload closure needed to replay that installation from
+# local IPS archives.
 
 set -eu
 
@@ -14,6 +15,9 @@ Environment:
                        (default: https://pkg.omnios.org/r151046/core)
   OMNIOS_EXTRA_SOURCE  extra publisher source
                        (default: https://pkg.omnios.org/r151046/extra)
+  OMNIOS_ARCHIVE_WORKDIR
+                       directory for temporary IPS images
+                       (default: $TMPDIR or /tmp)
 EOF
 }
 
@@ -46,9 +50,12 @@ append_sha256() {
 	printf '%s  %s\n' "$sha" "$(basename "$file")" >> "$outdir/SHA256SUMS"
 }
 
-pkg_install() {
+pkg_install_image() {
+	image=$1
+	shift
+
 	set +e
-	run_as_root pkg install --accept "$@"
+	run_as_root pkg -R "$image" install --accept "$@"
 	status=$?
 	set -e
 	if [ "$status" -ne 0 ] && [ "$status" -ne 4 ]; then
@@ -75,12 +82,43 @@ archive_publisher() {
 	fi
 
 	rm -f "$archive"
-	xargs pkgrecv -s "$source" -d "$archive" -a < "$fmris"
+	fmri_args=$(cat "$fmris")
+	# shellcheck disable=SC2086
+	pkgrecv -s "$source" -d "$archive" -a $fmri_args
 	pkg list -f -g "$archive" > "$archive.list"
-	xargs pkg contents -m -g "$archive" < "$fmris" > "$archive.manifests"
+	# shellcheck disable=SC2086
+	pkg contents -m -g "$archive" $fmri_args > "$archive.manifests"
 	append_sha256 "$archive"
 	append_sha256 "$archive.list"
 	append_sha256 "$archive.manifests"
+}
+
+create_image() {
+	image=$1
+	core=$2
+	extra=$3
+
+	run_as_root rm -rf "$image"
+	run_as_root pkg image-create -F -p "omnios=$core" "$image"
+	run_as_root pkg -R "$image" set-publisher -g "$extra" extra.omnios
+}
+
+verify_archives() {
+	image=$1
+	core=$2
+	extra=$3
+
+	create_image "$image" "$core" "$extra"
+	fmri_args=$(cat "$outdir/install.fmris")
+	# shellcheck disable=SC2086
+	run_as_root pkg -R "$image" install -n --accept --no-refresh $fmri_args \
+		> "$outdir/replay-verify.txt" 2>&1
+	if grep -q 'Insufficient disk space' "$outdir/replay-verify.txt"; then
+		cat "$outdir/replay-verify.txt" >&2
+		return 1
+	fi
+	run_as_root rm -rf "$image"
+	append_sha256 "$outdir/replay-verify.txt"
 }
 
 if [ "$#" -lt 2 ]; then
@@ -93,29 +131,28 @@ shift
 
 core_source=${OMNIOS_CORE_SOURCE:-https://pkg.omnios.org/r151046/core}
 extra_source=${OMNIOS_EXTRA_SOURCE:-https://pkg.omnios.org/r151046/extra}
+workdir=${OMNIOS_ARCHIVE_WORKDIR:-${TMPDIR:-/tmp}}
+scratch=$workdir/archive-omnios-build-env.$$
+verify=$workdir/archive-omnios-build-env-verify.$$
+
+trap 'run_as_root rm -rf "$scratch" "$verify"' EXIT HUP INT TERM
 
 mkdir -p "$outdir"
+mkdir -p "$workdir"
 rm -f "$outdir/SHA256SUMS"
 
-pkg list -Hv | sort > "$outdir/installed-before.fmris"
-pkg publisher -H > "$outdir/publishers-before.txt"
+pkg list -Hv | awk '{ print $1 }' | sort > "$outdir/host-installed.fmris"
+pkg publisher -H > "$outdir/host-publishers.txt"
 
-run_as_root pkg set-publisher -G '*' -M '*' -g "$core_source" omnios
-pkg publisher extra.omnios >/dev/null 2>&1 ||
-	run_as_root pkg set-publisher -g "$extra_source" extra.omnios
-run_as_root pkg refresh omnios extra.omnios
+create_image "$scratch" "$core_source" "$extra_source"
 
 printf '%s\n' "$@" > "$outdir/requested-packages.txt"
-pkg_install "$@"
+pkg_install_image "$scratch" "$@"
 
-pkg list -Hv | sort > "$outdir/installed-after.fmris"
-pkg publisher -H > "$outdir/publishers-after.txt"
-pkg list -Hv "$@" | awk '{ print $1 }' | sort > "$outdir/requested.fmris"
-
-comm -13 "$outdir/installed-before.fmris" "$outdir/installed-after.fmris" \
-	> "$outdir/changed.fmris"
-cat "$outdir/requested.fmris" "$outdir/changed.fmris" |
-	sort -u > "$outdir/install.fmris"
+pkg -R "$scratch" list -Hv | awk '{ print $1 }' | sort > "$outdir/install.fmris"
+pkg -R "$scratch" publisher -H > "$outdir/scratch-publishers.txt"
+pkg -R "$scratch" list -Hv "$@" | awk '{ print $1 }' | sort \
+	> "$outdir/requested.fmris"
 
 [ -s "$outdir/install.fmris" ] ||
 	die "no package FMRIs selected for archive"
@@ -128,13 +165,15 @@ archive_publisher omnios "$core_source" "$outdir/omnios-r151046-core.p5p" \
 archive_publisher extra.omnios "$extra_source" \
 	"$outdir/omnios-r151046-extra.p5p" "$outdir/extra.omnios.fmris"
 
-append_sha256 "$outdir/installed-before.fmris"
-append_sha256 "$outdir/installed-after.fmris"
-append_sha256 "$outdir/publishers-before.txt"
-append_sha256 "$outdir/publishers-after.txt"
+run_as_root rm -rf "$scratch"
+verify_archives "$verify" "$outdir/omnios-r151046-core.p5p" \
+	"$outdir/omnios-r151046-extra.p5p"
+
+append_sha256 "$outdir/host-installed.fmris"
+append_sha256 "$outdir/host-publishers.txt"
+append_sha256 "$outdir/scratch-publishers.txt"
 append_sha256 "$outdir/requested-packages.txt"
 append_sha256 "$outdir/requested.fmris"
-append_sha256 "$outdir/changed.fmris"
 append_sha256 "$outdir/install.fmris"
 append_sha256 "$outdir/omnios.fmris"
 append_sha256 "$outdir/extra.omnios.fmris"
