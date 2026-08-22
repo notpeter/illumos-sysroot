@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      full-gate-build:
+        description: Build illumos-gate and assemble the sysroot from repo.redist
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   archive:
@@ -54,4 +60,42 @@ jobs:
           name: illumos-sysroot-20231226-smoke
           path: |
             output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz
+            output/tar.list
+
+  full-gate-build:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full-gate-build }}
+    name: Build illumos-gate sysroot on OmniOS r151046
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build illumos-gate and archive in OmniOS
+        uses: vmactions/omnios-vm@v1
+        with:
+          release: r151046
+          sync: rsync
+          cache-after-prepare: true
+          prepare: |
+            pkg set-publisher -g https://pkg.omnios.org/r151046/extra extra.omnios
+            pkg refresh --full
+            pkg install --accept \
+              developer/build/onbld \
+              developer/gcc10 \
+              developer/build/gnu-make \
+              developer/illumos-tools \
+              runtime/java/openjdk11 \
+              developer/versioning/git \
+              ooce/developer/rust
+          run: |
+            set -eu
+            scripts/build-omnios-sysroot.sh -r 20231226 -w /tmp/illumos-sysroot-build -j 4
+
+      - name: Upload full build archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: illumos-sysroot-20231226-full
+          path: |
+            output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz
+            output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz.sha256
             output/tar.list
