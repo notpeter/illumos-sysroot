@@ -24,7 +24,7 @@ produce the next one without re-deriving everything.
 | Build host | OmniOS r151046 (LTS, released 2023-05-01) |
 | Architecture | x86 only (`i386` + `amd64`), matching IPD 59 |
 | Selection policy | Support-window variant of IPD 59: newest commit present in both the oldest supported OmniOS LTS and the oldest supported SmartOS pkgsrc LTS. Explicitly *not* IPD 59's fixed "before 1 May of `Y - 3`" arithmetic |
-| Relationship to upstream | Build on illumos/sysroot#5 (pfmooney's 20210501 draft), do not fork away from it |
+| Relationship to upstream | Build on the 20210501 prerelease/illumos/sysroot#5 line of work, do not fork away from it |
 | Where the gate build runs | Peter's own OmniOS/Helios hardware, by hand, not in CI |
 
 Rationale for the base commit and the policy, plus the per-distribution data
@@ -54,7 +54,8 @@ Two repositories:
    cherry-picked build-tool fixes (python3 in-gate tools, a `PYTHON_VERSION`
    regression, `nawk` cleanup, NULL fixes in `tic` and the iconv modules) so a
    December 2018 gate would compile on a newer host. There is also a
-   `sysroot/20210501` branch carrying one backport for the in-flight draft.
+   `sysroot/20210501` branch carrying one build backport for the 20210501
+   prerelease.
 2. **`illumos/sysroot`** (this repository) -- `gmake archive`, which runs
    `mf2tar` against the IPS repository the gate build produced.
 
@@ -92,10 +93,10 @@ what we are following, with two deviations we intend to propose as amendments:
 Also note: **publishing is the Core Team's job** per IPD 59. We can prepare
 and validate everything, but cutting the release is theirs.
 
-And note the backlog. IPD 59 landed in January 2026, and the draft currently in
-flight (illumos/sysroot#5) is the artifact the policy assigns to publication
-year *2024*. The 2025 and 2026 artifacts have never been published. Whatever we
-do should be framed as helping clear that, not as jumping the queue.
+And note the backlog. IPD 59 landed in January 2026, and the 20210501
+prerelease is the artifact the policy assigns to publication year *2024*. The
+2025 and 2026 artifacts have never been published. Whatever we do should be
+framed as helping clear that, not as jumping the queue.
 
 ### Upstream state
 
@@ -104,6 +105,11 @@ do should be framed as helping clear that, not as jumping the queue.
   [`20181213-de6af22ae73b-v2`](https://github.com/gwr/sysroot/releases/tag/20181213-de6af22ae73b-v2),
   which keeps the v1 base commit but adds `system/library/security/gss` so
   `libgss.so.1` is present in both `usr/lib` and `usr/lib/amd64`.
+* `gwr/sysroot` published prerelease
+  [`20210501-e0b4275f34-v0`](https://github.com/gwr/sysroot/releases/tag/20210501-e0b4275f34-v0),
+  from illumos-gate branch `sysroot/20210501`. The branch head `e0b4275f34` is
+  one build backport on top of the selected 2021-04-30 base commit
+  `2ed5ea5a06df`.
 * **PR #5** (pfmooney), branch `draft-20210501`: `env/illumos.20210501.sh`,
   README release notes, adds `system/library/security/gss` to
   `INCLUDE_PACKAGES`, and a commit titled "Release 20210501-v0" dated
@@ -112,9 +118,9 @@ do should be framed as helping clear that, not as jumping the queue.
   above and subsumed by #5.
 * **Issue #3**: "New release", open since 2026-04-14, with the .NET port asking.
 * **Issue #2**: sysroot lacks `sys/sdt.h`; jclulow declined as out of scope.
-* Minor inconsistency worth mentioning upstream: #5 names its files `20210501`
-  while IPD 59's convention and its own worked example use the *commit* date,
-  which would make it `20210430`.
+* Minor inconsistency worth mentioning upstream: the 20210501 prerelease names
+  its files for the selected release date and backport branch head, while IPD
+  59's convention and worked example use the base commit date/hash.
 
 ## State of this working tree
 
@@ -129,7 +135,8 @@ Added:
 * `docs/plan.md` -- this file.
 * `profiles/20181213.mk` -- reproduces the v2 prerelease contents, including
   `system/library/security/gss`.
-* `profiles/20210501.mk` -- the upstream draft's configuration, for reference.
+* `profiles/20210501.mk` -- the 20210501 prerelease configuration, for
+  reference.
 * `profiles/20231226.mk` -- **the target of this work.**
 * `env/illumos.20210501.sh` -- taken verbatim from PR #5.
 * `env/illumos.20231226.sh` -- new. `usr/src/tools/env/illumos.sh` from

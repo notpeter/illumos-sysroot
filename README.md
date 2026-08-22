@@ -64,4 +64,5 @@ Detailed release notes are kept in [CHANGELOG.md](CHANGELOG.md).
 
 | Release | Gate commit | Notable contents | Notes |
 | ------- | ----------- | ---------------- | ----- |
+| `20210501-e0b4275f34-v0` | `e0b4275f34` | 20210501 prerelease from `sysroot/20210501`, including `system/library/security/gss` | [Changelog](CHANGELOG.md#sysroot-release-20210501-version-0) |
 | `20181213-de6af22ae73b-v2` | `de6af22ae73b` | Version 1 contents plus `libgss.so.1` from `system/library/security/gss` | [Changelog](CHANGELOG.md#sysroot-release-20181213-version-2) |

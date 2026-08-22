@@ -4,8 +4,40 @@
 
 | Release | Gate commit | Summary |
 | ------- | ----------- | ------- |
+| [`20210501-e0b4275f34-v0`](#sysroot-release-20210501-version-0) | `e0b4275f34` | Prerelease from the `sysroot/20210501` branch; based on `2ed5ea5a06df` plus one build backport |
 | [`20181213-de6af22ae73b-v2`](#sysroot-release-20181213-version-2) | `de6af22ae73b` | Version 1 contents plus `libgss.so.1` from `system/library/security/gss` |
 | [`20181213-de6af22ae73b-v1`](#sysroot-release-20181213-version-1) | `de6af22ae73b` | Initial illumos sysroot release for x86, including headers, base libraries, and GCC shim libraries |
+
+## Sysroot Release 20210501 Version 0
+
+This is a prerelease from the `sysroot/20210501` illumos-gate branch:
+
+```
+commit e0b4275f346eda86b39157cd7dd3cc889a1f6988
+Author:     Richard Lowe <richlowe@richlowe.net>
+AuthorDate: Sat May 21 23:13:37 2022 +0000
+Commit:     Patrick Mooney <pmooney@pfmooney.com>
+CommitDate: Thu Nov 6 20:02:18 2025 +0000
+
+    backport: 14710 remove long obsolete/unused pyzfs helper script
+```
+
+That branch head is based on:
+
+```
+commit 2ed5ea5a06df7f669d20d88729c625981a0de7bc
+CommitDate: Fri Apr 30 07:14:42 2021 +0000
+
+    13761 logadm: variable may be used uninitialized
+```
+
+The `e0b4275f34` backport removes obsolete `pyzfs` build/install references so
+the 2021 gate can be built for sysroot production. The exposed headers and
+link-time libraries remain anchored to the 2021 base commit.
+
+The archive also includes `system/library/security/gss`, providing:
+
+* `/usr/lib/{,amd64}/libgss.so.1`
 
 ## Sysroot Release 20181213 Version 2
 

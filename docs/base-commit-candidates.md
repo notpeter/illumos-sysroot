@@ -228,26 +228,27 @@ the most recent commit before 1 May of `Y - 3`. That rule produces:
 | 2021 | 2018-05-01 | `6d1e6c904b` | 2018-04-30 | 17294 | | r151022 |
 | 2022 | 2019-05-01 | `e742aada08` | 2019-04-30 | 18363 | | r151022 |
 | 2023 | 2020-05-01 | `9f9cceb6f1` | 2020-04-30 | 19657 | | r151030 |
-| 2024 | 2021-05-01 | `2ed5ea5a06df7f669d20d88729c625981a0de7bc` | 2021-04-30 | 20476 | `20210430-2ed5ea5a06df-v1` | r151030 |
+| 2024 | 2021-05-01 | `2ed5ea5a06df7f669d20d88729c625981a0de7bc` | 2021-04-30 | 20476 | `20210501-e0b4275f34-v0` | r151030 |
 | 2025 | 2022-05-01 | `e0994bd28f025d3d74315f7479562b6be19773c3` | 2022-04-29 | 21056 | `20220429-e0994bd28f02-v1` | r151038 |
 | 2026 | 2023-05-01 | `676abcb77c26296424298b37b96d2bce39ab25e5` | 2023-04-29 | 21609 | `20230429-676abcb77c26-v1` | r151038 |
 | 2027 | 2024-05-01 | `72af5a458c3a` | 2024-04-30 | - | `20240430-72af5a458c3a-v1` | r151038 / r151046 |
 | 2028 | 2025-05-01 | `7366ca9eaafd` | 2025-04-30 | - | `20250430-7366ca9eaafd-v1` | r151046 |
 | 2029 | 2026-05-01 | `4648b9b8c36d` | 2026-04-30 | - | `20260430-4648b9b8c36d-v1` | r151054 |
 
-The 2024 row is the base of the in-flight draft (illumos/sysroot#5,
-`env/illumos.20210501.sh`, and the `sysroot/20210501` branch of illumos-gate);
-the 2025 row is the worked example in IPD 59 itself. Both agree with the
-computation above, which validates the method.
+The 2024 row is the base of the 20210501 prerelease (`env/illumos.20210501.sh`,
+and the `sysroot/20210501` branch of illumos-gate). The prerelease tag uses the
+`sysroot/20210501` branch head, `e0b4275f34`, which is one build backport on top
+of the selected base commit. The 2025 row is the worked example in IPD 59
+itself. Both agree with the computation above, which validates the method.
 
 Two observations from that table:
 
-* **There is a backlog.** IPD 59 was published 2026-01-27 and the draft still
-  in flight is the *2024* artifact. The 2025 and 2026 artifacts
+* **There is a backlog.** IPD 59 was published 2026-01-27 and the 20210501
+  prerelease is the *2024* artifact. The 2025 and 2026 artifacts
   (`20220429-e0994bd28f02` and `20230429-676abcb77c26`) are both still owed.
-  Note also that illumos/sysroot#5 names its files `20210501` while the IPD's
-  own convention, and its own worked example, use the *commit* date, which
-  would make it `20210430`.
+  Note also that the 20210501 prerelease names its files for the selected
+  release date and the `sysroot/20210501` branch head rather than the base
+  commit date/hash that IPD 59 would imply.
 * **The 1 May cutoff always lands just before the new OmniOS LTS.** OmniOS
   releases LTS in early May, so "the LTS supported at the time of the commit"
   is always the *previous* one, roughly two years older than the commit. For
