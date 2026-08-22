@@ -40,6 +40,27 @@ manifest walk.  It does not prove that the archive contents correspond to the
 selected 2023-12-26 illumos-gate commit unless the input repository came from
 that gate build.
 
+## Deterministic archive metadata
+
+`mf2tar` writes ustar archive entries directly. For reproducible release
+archives, it normalizes:
+
+* tar entry uid/gid to `0`
+* tar entry mtime to `SOURCE_DATE_EPOCH`
+* gzip metadata with `gzip -n`
+
+Each release profile sets `SOURCE_DATE_EPOCH` to the selected `GATE_COMMIT`
+committer timestamp by default. The environment can still override it:
+
+```sh
+SOURCE_DATE_EPOCH=1703608857 gmake archive RELEASE=20231226 \
+    ILLUMOS_PKGREPO=/path/to/repository/publisher/root
+```
+
+Custom builds without `SOURCE_DATE_EPOCH` continue to use the current time.
+Archive member order is the deterministic manifest/package order emitted by
+the selected IPS repository plus the explicitly listed shim entries.
+
 ## Validated smoke result
 
 On 2026-08-21, this was validated on a Helios 3 VM at
@@ -84,5 +105,6 @@ To make `20231226-ae676b1204fb-v1` reproducible as an official sysroot:
    `packages/i386/nightly-nd/repo.redist` or publish a reproducible way to
    fetch it.
 3. Run `gmake archive RELEASE=20231226` against that `repo.redist`.
+   The profile supplies `SOURCE_DATE_EPOCH=1703608857`.
 4. Validate the archive by cross-building real consumers and running binaries
    on the oldest claimed targets.

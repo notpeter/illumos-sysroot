@@ -16,6 +16,10 @@ endif
 include $(PROFILE)
 endif
 
+ifneq ($(SOURCE_DATE_EPOCH),)
+export SOURCE_DATE_EPOCH
+endif
+
 OUTPUT ?=		output
 TARBASE ?=		illumos-sysroot-$(MACH)
 TARVERSION ?=		custom-v$(shell date +%Y%m%d-%H%M%S)
@@ -105,6 +109,7 @@ ident:
 	@printf 'gate branch: %s\n' '$(if $(GATE_BRANCH),$(GATE_BRANCH),(none))'
 	@printf 'gate commit: %s\n' '$(if $(GATE_COMMIT),$(GATE_COMMIT),(none))'
 	@printf 'build host: %s\n' '$(if $(BUILD_HOST),$(BUILD_HOST),(unspecified))'
+	@printf 'source date epoch: %s\n' '$(if $(SOURCE_DATE_EPOCH),$(SOURCE_DATE_EPOCH),(current time))'
 	@printf 'libgcc_s version: %s\n' '$(LIBGCC_VERSION)'
 	@printf 'packages: %s\n' '$(INCLUDE_PACKAGES)'
 
@@ -132,7 +137,7 @@ archive: check-pkgrepo $(SHIM_TARGETS) | $(OUTPUT) $(MF2TAR)
 	    --link $(USRLIB64)/libssp.so=libssp.so.0.0.0 \
 	    \
 	    $(TARFILE)
-	gzip < $(TARFILE) > $(TARFILE).gz
+	gzip -n < $(TARFILE) > $(TARFILE).gz
 
 .PHONY: clean
 clean:

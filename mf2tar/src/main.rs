@@ -5,8 +5,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::iter::Iterator;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 use std::process::exit;
+use std::time::SystemTime;
 
 use getopts::Options;
 use tar::{Builder, EntryType, Header};
@@ -38,34 +38,67 @@ struct Params {
 fn parse_args() -> Params {
     let mut opts = Options::new();
 
-    opts.optopt("r", "repository", "IPS repository directory (repo.redist)",
-        "REPOSITORY_DIR");
-    opts.optmulti("P", "package", "IPS package name (e.g., \"system/header\")",
-        "PACKAGE_NAME");
+    opts.optopt(
+        "r",
+        "repository",
+        "IPS repository directory (repo.redist)",
+        "REPOSITORY_DIR",
+    );
+    opts.optmulti(
+        "P",
+        "package",
+        "IPS package name (e.g., \"system/header\")",
+        "PACKAGE_NAME",
+    );
 
-    opts.optopt("p", "proto", "proto area from which the tar will \
-        be populated", "PROTO_DIR");
+    opts.optopt(
+        "p",
+        "proto",
+        "proto area from which the tar will \
+        be populated",
+        "PROTO_DIR",
+    );
     opts.optopt("m", "manifest", "IPS manifest file", "MANIFEST_FILE");
-    opts.optmulti("d", "define", "variable replacement \"macros\"",
-        "NAME=VALUE");
+    opts.optmulti(
+        "d",
+        "define",
+        "variable replacement \"macros\"",
+        "NAME=VALUE",
+    );
 
-    opts.optflag("a", "append", "append to tar file (instead of \
-        overwriting)");
-    opts.optmulti("E", "exclude-path", "exclude manifest object path",
-        "EXCLUDE_PATH");
+    opts.optflag(
+        "a",
+        "append",
+        "append to tar file (instead of \
+        overwriting)",
+    );
+    opts.optmulti(
+        "E",
+        "exclude-path",
+        "exclude manifest object path",
+        "EXCLUDE_PATH",
+    );
 
     opts.optmulti("F", "file", "add extra file in archive", "PATH=LOCALFILE");
-    opts.optmulti("L", "link", "add extra symlink in archive",
-        "PATH=LINKTARGET");
+    opts.optmulti(
+        "L",
+        "link",
+        "add extra symlink in archive",
+        "PATH=LINKTARGET",
+    );
 
     opts.optflag("", "help", "print usage information");
 
     let usage = || {
         let mut out = String::new();
-        out.push_str("Usage: mf2tar -r REPOSITORY_DIR -P PACKAGE_NAME... \
-            TARFILE\n");
-        out.push_str("       mf2tar -m MANIFEST_FILE -p PROTO_DIR \
-            TARFILE");
+        out.push_str(
+            "Usage: mf2tar -r REPOSITORY_DIR -P PACKAGE_NAME... \
+            TARFILE\n",
+        );
+        out.push_str(
+            "       mf2tar -m MANIFEST_FILE -p PROTO_DIR \
+            TARFILE",
+        );
         println!("{}", opts.usage(&out));
     };
 
@@ -79,9 +112,7 @@ fn parse_args() -> Params {
         }
     };
 
-    let have = |n: &str| -> bool {
-        res.opt_present(n)
-    };
+    let have = |n: &str| -> bool { res.opt_present(n) };
 
     if have("help") {
         usage();
@@ -116,7 +147,6 @@ fn parse_args() -> Params {
         }
 
         Source::ManifestProto(manifest, proto, defines)
-
     } else if let Some(repo) = res.opt_str("repository") {
         if have("p") || have("m") || have("d") {
             usage();
@@ -128,7 +158,6 @@ fn parse_args() -> Params {
         let packages = res.opt_strs("package");
 
         Source::RepositoryPackages(repository, packages)
-
     } else {
         usage();
         println!("ERROR: must specify either -r & -P, or -p & -m");
@@ -143,12 +172,15 @@ fn parse_args() -> Params {
             println!("ERROR: -F requires NAME=VALUE arguments");
             exit(1);
         }
-        extra.push(Extra::File(Entry::File(pkgmf::File {
-            path: t[0].to_string(),
-            attr: pkgmf::FsAttr::default(),
-            chash: None,
-            cname: None,
-        }), PathBuf::from(t[1])));
+        extra.push(Extra::File(
+            Entry::File(pkgmf::File {
+                path: t[0].to_string(),
+                attr: pkgmf::FsAttr::default(),
+                chash: None,
+                cname: None,
+            }),
+            PathBuf::from(t[1]),
+        ));
     }
     for l in res.opt_strs("link") {
         let t: Vec<_> = l.splitn(2, '=').collect();
@@ -184,10 +216,12 @@ fn parse_args() -> Params {
 }
 
 fn prepare_manifest(manifest: &Path) -> io::Result<(PathBuf, File)> {
-    let parent = manifest.parent().ok_or_else(|| io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "invalid manifest directory",
-    ))?;
+    let parent = manifest.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid manifest directory",
+        )
+    })?;
     let manifest_file = File::open(&manifest)?;
 
     Ok((parent.to_path_buf(), manifest_file))
@@ -217,17 +251,18 @@ fn prepare_tar(tar_path: &Path, append: bool) -> io::Result<Builder<File>> {
     if append {
         let mut parser = tar::Archive::new(tar_file);
         let entries = parser.entries()?;
-        let pos = entries.last().map_or(Ok(0u64), |last| -> io::Result<u64> {
-            match last {
-                Err(e) => Err(e),
-                Ok(ent) => {
-                    let size = ent.header().entry_size()?;
-                    let next = ent.raw_file_position() + size;
-                    let next_align = (next + (512 - 1)) & !(512 - 1);
-                    Ok(next_align)
+        let pos =
+            entries.last().map_or(Ok(0u64), |last| -> io::Result<u64> {
+                match last {
+                    Err(e) => Err(e),
+                    Ok(ent) => {
+                        let size = ent.header().entry_size()?;
+                        let next = ent.raw_file_position() + size;
+                        let next_align = (next + (512 - 1)) & !(512 - 1);
+                        Ok(next_align)
+                    }
                 }
-            }
-        })?;
+            })?;
         tar_file = parser.into_inner();
         tar_file.seek(SeekFrom::Start(pos))?;
     }
@@ -253,7 +288,8 @@ where
     );
 
     // Buffer a file input (and strictly convert to line-separated utf8)
-    let file_to_strings = |f: File| BufReader::new(f).lines().filter_map(|x| x.ok());
+    let file_to_strings =
+        |f: File| BufReader::new(f).lines().filter_map(|x| x.ok());
     // Handle $(variable) replacement with provided defines
     let replace = |name: &str| {
         let val = defines.get(name)?;
@@ -297,10 +333,9 @@ where
             inc_path = inc_path.canonicalize()?;
 
             // Search for a match in the include stack to avoid infinite include loops
-            if include_stack
-                .iter()
-                .any(|(path, _)| path.to_str().unwrap() == inc_path.to_str().unwrap())
-            {
+            if include_stack.iter().any(|(path, _)| {
+                path.to_str().unwrap() == inc_path.to_str().unwrap()
+            }) {
                 let msg = format!(
                     "infinite include loop through {}",
                     &inc_path.to_str().unwrap_or("")
@@ -335,6 +370,8 @@ fn append_tar<W: io::Write>(
             header.set_entry_type(EntryType::Directory);
             header.set_path(&dir.path)?;
             header.set_mode(0o755);
+            header.set_uid(0);
+            header.set_gid(0);
             header.set_mtime(mtime);
             header.set_cksum();
 
@@ -347,11 +384,14 @@ fn append_tar<W: io::Write>(
             header.set_entry_type(EntryType::Regular);
             header.set_path(&file.path)?;
             header.set_mode(0o644);
+            header.set_uid(0);
+            header.set_gid(0);
             header.set_mtime(mtime);
 
             match source {
-                TarFileSource::None =>
-                    panic!("should not be None for Entry::File"),
+                TarFileSource::None => {
+                    panic!("should not be None for Entry::File")
+                }
                 TarFileSource::SingleFile(path) => {
                     let source = match File::open(&path) {
                         Err(e) => {
@@ -367,7 +407,10 @@ fn append_tar<W: io::Write>(
                     if !meta.file_type().is_file() {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("{} is not a file", &path.to_str().unwrap()),
+                            format!(
+                                "{} is not a file",
+                                &path.to_str().unwrap()
+                            ),
                         ));
                     }
                     let source_len = meta.len();
@@ -384,7 +427,11 @@ fn append_tar<W: io::Write>(
                         Err(e) => {
                             return Err(io::Error::new(
                                 e.kind(),
-                                format!("{}: {}", e, &source_path.to_str().unwrap()),
+                                format!(
+                                    "{}: {}",
+                                    e,
+                                    &source_path.to_str().unwrap()
+                                ),
                             ));
                         }
                         Ok(f) => f,
@@ -394,7 +441,10 @@ fn append_tar<W: io::Write>(
                     if !meta.file_type().is_file() {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("{} is not a file", &source_path.to_str().unwrap()),
+                            format!(
+                                "{} is not a file",
+                                &source_path.to_str().unwrap()
+                            ),
                         ));
                     }
                     let source_len = meta.len();
@@ -404,14 +454,16 @@ fn append_tar<W: io::Write>(
                     builder.append(&header, source.take(source_len))?;
                 }
                 TarFileSource::Repository(repo) => {
-                    let buf = match repo.file(file.cname.as_ref().unwrap(),
-                        file.chash.as_ref().unwrap())
-                    {
+                    let buf = match repo.file(
+                        file.cname.as_ref().unwrap(),
+                        file.chash.as_ref().unwrap(),
+                    ) {
                         Ok(v) => v,
                         Err(e) => {
                             return Err(io::Error::new(
                                 io::ErrorKind::Other,
-                                format!("file {}: {}", &file.path, e)));
+                                format!("file {}: {}", &file.path, e),
+                            ));
                         }
                     };
 
@@ -431,6 +483,8 @@ fn append_tar<W: io::Write>(
             header.set_path(&link.path)?;
             header.set_mtime(mtime);
             header.set_mode(0o777);
+            header.set_uid(0);
+            header.set_gid(0);
             header.set_link_name(&link.target)?;
             header.set_cksum();
 
@@ -443,26 +497,44 @@ fn append_tar<W: io::Write>(
     }
 }
 
+fn archive_mtime() -> u64 {
+    match std::env::var("SOURCE_DATE_EPOCH") {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(epoch) => epoch,
+            Err(err) => {
+                eprintln!(
+                    "ERROR: invalid SOURCE_DATE_EPOCH {:?}: {}",
+                    value, err
+                );
+                exit(1);
+            }
+        },
+        Err(_) => SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    }
+}
+
 fn main() {
     let params = parse_args();
 
     /*
-     * Use a single mtime for all files in the archive.
+     * Use a single mtime for all files in the archive. SOURCE_DATE_EPOCH makes
+     * release archives reproducible from identical inputs.
      */
-    let mtime = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let mtime = archive_mtime();
 
     let mut tar_builder = match &params.source {
         Source::ManifestProto(manifest, proto_area, defines) => {
-            let (manifest_dir, manifest_file) = match prepare_manifest(&manifest) {
-                Err(err) => {
-                    eprintln!("Error preparing: {}", err);
-                    exit(118);
-                }
-                Ok(state) => state,
-            };
+            let (manifest_dir, manifest_file) =
+                match prepare_manifest(&manifest) {
+                    Err(err) => {
+                        eprintln!("Error preparing: {}", err);
+                        exit(118);
+                    }
+                    Ok(state) => state,
+                };
 
             let proto_dir = match prepare_proto(&proto_area) {
                 Err(err) => {
@@ -545,14 +617,19 @@ fn main() {
                 let pkg = if let Some(pkg) = packages.get(pn) {
                     pkg
                 } else {
-                    eprintln!("ERROR: package \"{}\" not found in repository",
-                        pn);
+                    eprintln!(
+                        "ERROR: package \"{}\" not found in repository",
+                        pn
+                    );
                     exit(100);
                 };
 
                 if pkg.versions.len() != 1 {
-                    eprintln!("ERROR: package \"{}\" has {} versions, not 1",
-                        pn, pkg.versions.len());
+                    eprintln!(
+                        "ERROR: package \"{}\" has {} versions, not 1",
+                        pn,
+                        pkg.versions.len()
+                    );
                     exit(101);
                 }
 
@@ -566,14 +643,18 @@ fn main() {
 
                 for ent in mfest {
                     if let Some(path) = ent.get_path() {
-                        if params.excludes
+                        if params
+                            .excludes
                             .iter()
                             .find(|&comp| path.starts_with(comp))
                             .is_none()
                         {
-                            if let Err(e) = append_tar(&mut tar_builder,
-                                &source, &ent, mtime)
-                            {
+                            if let Err(e) = append_tar(
+                                &mut tar_builder,
+                                &source,
+                                &ent,
+                                mtime,
+                            ) {
                                 eprintln!("ERROR: tar: {}", e);
                                 exit(110);
                             }
@@ -591,14 +672,18 @@ fn main() {
     }
     for extra in &params.extra {
         let res = match extra {
-            Extra::File(entry, file) => {
-                append_tar(&mut tar_builder, &TarFileSource::SingleFile(file),
-                    &entry, mtime)
-            }
-            Extra::Link(entry) => {
-                append_tar(&mut tar_builder, &TarFileSource::None,
-                    &entry, mtime)
-            }
+            Extra::File(entry, file) => append_tar(
+                &mut tar_builder,
+                &TarFileSource::SingleFile(file),
+                &entry,
+                mtime,
+            ),
+            Extra::Link(entry) => append_tar(
+                &mut tar_builder,
+                &TarFileSource::None,
+                &entry,
+                mtime,
+            ),
         };
         if let Err(e) = res {
             eprintln!("ERROR: tar: {}", e);

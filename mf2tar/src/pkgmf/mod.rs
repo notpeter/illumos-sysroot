@@ -48,7 +48,7 @@ impl Entry {
             Entry::Dir(dir) => Some(&dir.path),
             Entry::File(file) => Some(&file.path),
             Entry::Link(link) => Some(&link.path),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -140,7 +140,15 @@ where
 // file path=lib/$(ARCH64)/c_synonyms.so.1
 // link path=lib/$(ARCH64)/libadm.so target=libadm.so.1
 
-fn parse_file_fields(input: &str) -> (Option<String>, Option<String>, FsAttr, Option<String>, Option<String>) {
+fn parse_file_fields(
+    input: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    FsAttr,
+    Option<String>,
+    Option<String>,
+) {
     let mut chash: Option<String> = None;
     let mut cname: Option<String> = None;
     let mut path: Option<String> = None;
@@ -192,12 +200,20 @@ fn parse_entry(input: &str) -> Entry {
             }
         }
         "file" => {
-            if let (Some(path), _, attr, chash, cname) = parse_file_fields(rest) {
-                return Entry::File(File { path, attr, chash, cname, });
+            if let (Some(path), _, attr, chash, cname) = parse_file_fields(rest)
+            {
+                return Entry::File(File {
+                    path,
+                    attr,
+                    chash,
+                    cname,
+                });
             }
         }
         "link" => {
-            if let (Some(path), Some(target), attr, _, _) = parse_file_fields(rest) {
+            if let (Some(path), Some(target), attr, _, _) =
+                parse_file_fields(rest)
+            {
                 return Entry::Link(Link { path, attr, target });
             }
         }
@@ -209,7 +225,7 @@ fn parse_entry(input: &str) -> Entry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::io::{Cursor, BufRead};
+    use std::io::{BufRead, Cursor};
 
     #[test]
     fn comments_and_continuations() {
@@ -229,7 +245,10 @@ line";
 
         assert_eq!(get_full_line(&mut iter), Some("normal line".to_string()));
         assert_eq!(get_full_line(&mut iter), Some("cont line".to_string()));
-        assert_eq!(get_full_line(&mut iter), Some("long cont line".to_string()));
+        assert_eq!(
+            get_full_line(&mut iter),
+            Some("long cont line".to_string())
+        );
         assert_eq!(get_full_line(&mut iter), None);
     }
 
@@ -285,18 +304,24 @@ line";
             parse_entry("file path=bin/ls"),
             Entry::File(File {
                 path: "bin/ls".to_string(),
-                attr: Default::default()
+                attr: Default::default(),
+                chash: None,
+                cname: None,
             })
         );
         assert_eq!(
-            parse_entry("file path=bin/secret owner=special group=selective mode=0540"),
+            parse_entry(
+                "file path=bin/secret owner=special group=selective mode=0540"
+            ),
             Entry::File(File {
                 path: "bin/secret".to_string(),
                 attr: FsAttr {
                     owner: Some("special".to_string()),
                     group: Some("selective".to_string()),
                     mode: Some("0540".to_string()),
-                }
+                },
+                chash: None,
+                cname: None,
             })
         );
         assert_eq!(

@@ -36,13 +36,11 @@ pub struct Repository {
 }
 
 #[derive(Debug)]
-pub struct Version<'a> {
-    version: String,
+pub struct Version {
     file: PathBuf,
-    repo: &'a Repository,
 }
 
-impl Version<'_> {
+impl Version {
     pub fn manifest(&self) -> Result<Box<dyn Iterator<Item = Entry>>> {
         let f = File::open(&self.file)?;
         let data = BufReader::new(f).lines().filter_map(|x| x.ok());
@@ -54,9 +52,8 @@ impl Version<'_> {
 }
 
 #[derive(Debug)]
-pub struct Package<'a> {
-    pub name: String,
-    pub versions: Vec<Version<'a>>,
+pub struct Package {
+    pub versions: Vec<Version>,
 }
 
 impl Repository {
@@ -69,8 +66,11 @@ impl Repository {
 
         let outer_hash = hash_buf(&buf);
         if &outer_hash != chash {
-            return Err(format!("hash mismatch: {} != expected {}", outer_hash,
-                chash).into());
+            return Err(format!(
+                "hash mismatch: {} != expected {}",
+                outer_hash, chash
+            )
+            .into());
         }
 
         let mut gunzip = GzDecoder::new(buf.as_slice());
@@ -78,8 +78,11 @@ impl Repository {
         gunzip.read_to_end(&mut rawbuf)?;
         let inner_hash = hash_buf(&rawbuf);
         if &inner_hash != cname {
-            return Err(format!("hash mismatch: {} != expected {}", inner_hash,
-                cname).into());
+            return Err(format!(
+                "hash mismatch: {} != expected {}",
+                inner_hash, cname
+            )
+            .into());
         }
 
         Ok(rawbuf)
@@ -126,7 +129,7 @@ impl Repository {
             for file in read_dir(&p.path())? {
                 let file = file?;
 
-                let version = if let Some(name) = file.file_name().to_str() {
+                if let Some(name) = file.file_name().to_str() {
                     percent_encoding::percent_decode_str(&name)
                         .decode_utf8()?
                         .to_string()
@@ -136,14 +139,10 @@ impl Repository {
 
                 let file = file.path();
 
-                versions.push(Version {
-                    version,
-                    file,
-                    repo: &self,
-                });
+                versions.push(Version { file });
             }
 
-            pkgs.insert(name.clone(), Package { name, versions });
+            pkgs.insert(name, Package { versions });
         }
 
         Ok(pkgs)
