@@ -86,9 +86,9 @@ export SHADOW_CCCS=gcc7,/usr/gcc/7/bin/g++,gnu
 # comment to disable smatch
 export ENABLE_SMATCH=1
 
-# Comment this out to disable support for SMB printing, i.e. if you
-# don't want to bother providing the CUPS headers this needs.
-export ENABLE_SMB_PRINTING=
+# Leave SMB printing disabled for sysroot builds.  Setting this to an empty
+# value enables CUPS support, which requires distribution-specific headers.
+#export ENABLE_SMB_PRINTING=
 
 # If your distro uses certain versions of Perl, make sure either Makefile.master
 # contains your new defaults OR your .env file sets them.
@@ -287,8 +287,10 @@ fi
 ######################################################################
 # OmniOS r151046 sysroot build overrides
 
-# Build only the non-DEBUG tree.  The archive is assembled from nightly-nd.
-export NIGHTLY_OPTIONS='-nCAmprt'
+# Build only the non-DEBUG tree and package it.  The archive is assembled from
+# nightly-nd.  Skip the full check/ABI/runpath phases for this sysroot build.
+export NIGHTLY_OPTIONS='-nmpt'
+export PATH="/opt/onbld/bin:/opt/ooce/bin:/opt/gcc-10/bin:$PATH"
 
 # OmniOS packages GCC under /opt/gcc-N rather than /usr/gcc/N.
 export GNUC_ROOT=/opt/gcc-10
@@ -308,7 +310,6 @@ export BUILDPERL32='#'
 export PYTHON3_VERSION=3.11
 export PYTHON3_PKGVERS=-311
 export PYTHON3_SUFFIX=
-export TOOLS_PYTHON=
 
 export JAVA_ROOT=/usr/jdk/openjdk11.0
 export JAVA_HOME=$JAVA_ROOT
