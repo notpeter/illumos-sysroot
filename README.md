@@ -58,57 +58,10 @@ Note that by default, the archive will be named with a custom version string to
 make it easy to see that it is not an official release.  Release maintainers
 must override the `TARVERSION` make variable appropriately.
 
-## Release Notes
+## Release History
 
-### Sysroot Release 20181213 Version 1
+Detailed release notes are kept in [CHANGELOG.md](CHANGELOG.md).
 
-It is important to be deliberate with respect to what is included in the
-sysroot archive.  The contents will affect the choice of target systems for
-which binaries can be produced by the cross compiler.
-
-In that spirit, we have selected the following illumos-gate commit:
-
-```
-commit de6af22ae73ba8d72672288621ff50b88f2cf5fd
-Author:     Jason King <jason.brian.king@gmail.com>
-AuthorDate: Thu Dec 13 10:43:17 2018 -0800
-Commit:     Joshua M. Clulow <josh@sysmgr.org>
-CommitDate: Thu Dec 13 10:43:17 2018 -0800
-
-    9971 Make getrandom(2) a public interface
-    Reviewed by: Dan McDonald <danmcd@joyent.com>
-    Reviewed by: Mike Gerdts <mike.gerdts@joyent.com>
-    Reviewed by: Peter Tribble <peter.tribble@gmail.com>
-    Reviewed by: Robert Mustacchi <rm@joyent.com>
-    Reviewed by: Andy Fiddaman <omnios@citrus-it.net>
-    Reviewed by: Igor Kozhukhov <igor@dilos.org>
-    Approved by: Joshua M. Clulow <josh@sysmgr.org>
-```
-
-This commit was available in:
-
-* OpenIndiana in the [2019.04 ISO
-  release](http://docs.openindiana.org/release-notes/2019.04-release-notes/),
-  or via `pkg update` some time in December of 2018 if you had installed a
-  prior release.  Of note: packages from prior to 20190626 are sufficiently
-  old at time of writing to have been garbage collected from the main IPS
-  repository.
-
-* SmartOS platform images starting with
-  [20181220T002304Z](https://us-east.manta.joyent.com/Joyent_Dev/public/SmartOS/smartos.html#20181220T002304Z).
-
-* OmniOS CE [releases](https://omniosce.org/schedule) starting with r151030
-  (LTS, released 2019-05-06).
-
-In addition to the illumos base, we are including the following additional
-libraries that appear in `/usr/lib` on all of the above platforms:
-
-* `/usr/lib/{,amd64}/libssp.so.0.0.0` (version `LIBSSP_1.0`)
-* `/usr/lib/{,amd64}/libgcc_s.so.1` (version `GCC_4.8.0`)
-
-Note that these additional libraries are not usefully executable, but rather
-are mere shim libraries that contain the same symbols and library versions as
-we expect in the real thing.  This doesn't matter in practice, as the sysroot
-is for cross compilation; the build machine must not execute program text for
-the target machine.  These shim libraries are created through mapfiles and stub
-code built from this repository.
+| Release | Gate commit | Notable contents | Notes |
+| ------- | ----------- | ---------------- | ----- |
+| `20181213-de6af22ae73b-v2` | `de6af22ae73b` | Version 1 contents plus `libgss.so.1` from `system/library/security/gss` | [Changelog](CHANGELOG.md#sysroot-release-20181213-version-2) |

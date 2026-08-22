@@ -100,11 +100,16 @@ do should be framed as helping clear that, not as jumping the queue.
 ### Upstream state
 
 * `illumos/sysroot` master has not moved since 2020-04-12.
+* `gwr/sysroot` published prerelease
+  [`20181213-de6af22ae73b-v2`](https://github.com/gwr/sysroot/releases/tag/20181213-de6af22ae73b-v2),
+  which keeps the v1 base commit but adds `system/library/security/gss` so
+  `libgss.so.1` is present in both `usr/lib` and `usr/lib/amd64`.
 * **PR #5** (pfmooney), branch `draft-20210501`: `env/illumos.20210501.sh`,
   README release notes, adds `system/library/security/gss` to
   `INCLUDE_PACKAGES`, and a commit titled "Release 20210501-v0" dated
   2026-05-27. Backed by `illumos-gate` branch `sysroot/20210501`.
-* **PR #4** (gwr): just the libgss change, subsumed by #5.
+* **PR #4** (gwr): just the libgss change, superseded by the v2 prerelease
+  above and subsumed by #5.
 * **Issue #3**: "New release", open since 2026-04-14, with the .NET port asking.
 * **Issue #2**: sysroot lacks `sys/sdt.h`; jclulow declined as out of scope.
 * Minor inconsistency worth mentioning upstream: #5 names its files `20210501`
@@ -122,7 +127,8 @@ Added:
 * `docs/base-commit-candidates.md` -- the selection policy, the per-distribution
   data it rests on, how to reproduce that data, and the comparison with IPD 59.
 * `docs/plan.md` -- this file.
-* `profiles/20181213.mk` -- reproduces the published release. Do not change.
+* `profiles/20181213.mk` -- reproduces the v2 prerelease contents, including
+  `system/library/security/gss`.
 * `profiles/20210501.mk` -- the upstream draft's configuration, for reference.
 * `profiles/20231226.mk` -- **the target of this work.**
 * `env/illumos.20210501.sh` -- taken verbatim from PR #5.
@@ -277,7 +283,7 @@ build that wants 20-30 GB and hours. Instead:
 * Propose the two IPD 59 amendments (commit selection, build host) as a
   concrete diff against `ipd/0059/README.adoc`.
 * Offer the profile mechanism as a PR on top of #5, since #5's env file and
-  libgss change are already carried here.
+  the v2 libgss change are already carried here.
 * The release itself has to be cut by the Core Team.
 
 ## Risks
