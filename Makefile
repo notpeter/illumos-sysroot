@@ -61,6 +61,8 @@ EXCLUDE_DIRS ?=		usr/share \
 			bin
 
 LIBGCC_VERSION ?=	4_8_0
+PREBUILT_SHIMS ?=	false
+PREBUILT_SHIM_DIR ?=
 
 #
 # Shim libraries that we generate for artefacts that come from consolidations
@@ -74,17 +76,44 @@ LIBSSP_64 =		shims/libssp/$(MACH64)/libssp.so.0.0.0
 
 SHIM_TARGETS  =		$(LIBGCC_32) $(LIBGCC_64) $(LIBSSP_32) $(LIBSSP_64)
 
+ifeq ($(PREBUILT_SHIMS),true)
+LIBGCC_32 =		$(PREBUILT_SHIM_DIR)/$(USRLIB)/libgcc_s.so.1
+LIBGCC_64 =		$(PREBUILT_SHIM_DIR)/$(USRLIB64)/libgcc_s.so.1
+LIBSSP_32 =		$(PREBUILT_SHIM_DIR)/$(USRLIB)/libssp.so.0.0.0
+LIBSSP_64 =		$(PREBUILT_SHIM_DIR)/$(USRLIB64)/libssp.so.0.0.0
+SHIM_PREREQS =		check-prebuilt-shims
+else
+SHIM_PREREQS =		$(SHIM_TARGETS)
+endif
+
 .PHONY: all
 all: archive
 
 .PHONY: shims
-shims: $(SHIM_TARGETS)
+shims: $(SHIM_PREREQS)
 
 $(LIBGCC_32) $(LIBGCC_64):
 	$(MAKE) -C shims/libgcc_s VERSION=$(LIBGCC_VERSION)
 
 $(LIBSSP_32) $(LIBSSP_64):
 	$(MAKE) -C shims/libssp
+
+.PHONY: check-prebuilt-shims
+check-prebuilt-shims:
+	@if [ -z "$(PREBUILT_SHIM_DIR)" ]; then \
+		printf 'ERROR: specify PREBUILT_SHIM_DIR when PREBUILT_SHIMS=true\n' >&2; \
+		exit 1; \
+	fi
+	@for shim in \
+		"$(LIBGCC_32)" \
+		"$(LIBGCC_64)" \
+		"$(LIBSSP_32)" \
+		"$(LIBSSP_64)"; do \
+		if [ ! -f "$$shim" ]; then \
+			printf 'ERROR: missing prebuilt shim: %s\n' "$$shim" >&2; \
+			exit 1; \
+		fi; \
+	done
 
 .PHONY: $(MF2TAR)
 $(MF2TAR):
@@ -118,7 +147,7 @@ print-packages:
 	@printf '%s\n' $(INCLUDE_PACKAGES)
 
 .PHONY: archive
-archive: check-pkgrepo $(SHIM_TARGETS) | $(OUTPUT) $(MF2TAR)
+archive: check-pkgrepo $(SHIM_PREREQS) | $(OUTPUT) $(MF2TAR)
 	$(MF2TAR) \
 	    --repository $(ILLUMOS_PKGREPO) \
 	    $(addprefix -P ,$(INCLUDE_PACKAGES)) \

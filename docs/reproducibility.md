@@ -1,11 +1,15 @@
 # Reproducibility notes
 
-This repository now has two separate build paths:
+This repository now has three separate build paths:
 
 1. Archive assembly from an existing IPS repository.
 2. The full illumos-gate build that produces the official `repo.redist`.
+3. Portable archive assembly from a fixed `repo.redist` plus prebuilt shim
+   objects.
 
-Only the first path has been validated so far.
+The first path is exercised by CI.  The third path has been validated locally by
+assembling the same `repo.redist` and prebuilt shim inputs twice on Linux and
+confirming byte-identical `.tar.gz` output.
 
 ## Archive assembly
 
@@ -39,6 +43,55 @@ This proves the archive tooling, shims, profile selection, and package
 manifest walk.  It does not prove that the archive contents correspond to the
 selected 2023-12-26 illumos-gate commit unless the input repository came from
 that gate build.
+
+## Portable archive assembly
+
+The `repo.redist` to sysroot step does not inherently require illumos.  The
+illumos-specific part is building the shim shared objects.  If those shim
+objects are treated as fixed inputs, archive assembly can run on Linux or other
+non-illumos hosts with Rust, Cargo, `gmake`, `gzip`, and `tar`.
+
+Extract shim objects from an existing sysroot archive:
+
+```sh
+scripts/extract-prebuilt-shims.sh \
+    output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz \
+    /tmp/illumos-sysroot-shims
+```
+
+Assemble from a fixed `repo.redist`:
+
+```sh
+scripts/assemble-sysroot-from-repo.sh \
+    /path/to/packages/i386/nightly-nd/repo.redist \
+    /tmp/illumos-sysroot-shims
+```
+
+This runs:
+
+```sh
+gmake archive PREBUILT_SHIMS=true \
+    PREBUILT_SHIM_DIR=/tmp/illumos-sysroot-shims \
+    ILLUMOS_PKGREPO=/path/to/packages/i386/nightly-nd/repo.redist
+```
+
+The prebuilt shim directory must contain:
+
+* `usr/lib/libgcc_s.so.1`
+* `usr/lib/amd64/libgcc_s.so.1`
+* `usr/lib/libssp.so.0.0.0`
+* `usr/lib/amd64/libssp.so.0.0.0`
+
+This makes it possible to reproduce the final sysroot archive from preserved
+`repo.redist` and preserved shim inputs without booting an illumos builder.
+
+Local validation from fixed inputs produced byte-identical archives across two
+runs:
+
+```text
+c86cb4023396011f241e9b3b3598d9a66a38f53c43d13e7590a28be9736d5141  illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz
+672713b70a2968e7f4379b1d148f0cb2d90c19125cda320c54d77a84f2634abd  decompressed tar stream
+```
 
 ## Deterministic archive metadata
 
@@ -101,18 +154,21 @@ setup:
 
 1. `build-env` boots OmniOS with live package access, creates a clean
    temporary IPS image, installs the build packages into that image, records
-   the complete installed FMRI closure, and preserves those payloads in `.p5p`
-   IPS package archives.
+   that clean-image FMRI closure, and preserves those payloads in `.p5p` IPS
+   package archives.
 2. `full-gate-build` downloads those package archives, removes live publisher
-   origins from the VM image, installs the exact FMRI closure from the local archives,
-   and verifies the requested package FMRIs before building.
+   origins from the VM image, installs the exact requested build package FMRIs
+   from the local archives, and verifies the requested package FMRIs before
+   building.
 
 This keeps the release build from depending on live OmniOS package repositories
 after the package archive artifact has been generated.
 
 The archived payloads are verified by creating another temporary IPS image and
-dry-running an install of the archived FMRI closure using only the generated
-package archives.
+dry-running an install of the exact requested package FMRIs using only the
+generated package archives.  `install.fmris` records the full clean-image
+closure available in those archives; `requested.fmris` records the exact build
+package install targets used by the workflow.
 
 The package archive artifact includes:
 
@@ -120,7 +176,7 @@ The package archive artifact includes:
 * `omnios-r151046-extra.p5p`
 * `install.fmris`
 * `requested.fmris`
-* `host-installed.fmris`
+* `host-before.fmris`
 * `scratch-publishers.txt`
 * `replay-verify.txt`
 * package archive package lists and manifests

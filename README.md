@@ -43,15 +43,35 @@ e.g.,
 [sysroot/20181213](https://github.com/illumos/illumos-gate/tree/sysroot/20181213).
 The environment file lives in this repository under `env/`.
 
-You'll need to install Rust (to build `mf2tar`) and a C compiler (to build the
-shims).  Once you have those, and you have your illumos packages, making the
-archive is (hopefully!) as simple as:
+You'll need to install Rust (to build `mf2tar`) and, by default, a C compiler
+and the illumos link-editor (to build the shims).  Once you have those, and you
+have your illumos packages, making the archive is (hopefully!) as simple as:
 
 ```
 $ gmake archive \
     ILLUMOS_PKGREPO=/ws/oldgate/packages/i386/nightly-nd/repo.redist
 ...
 gzip < output/illumos-sysroot-i386-custom-v20200411-224313.tar > output/illumos-sysroot-i386-custom-v20200411-224313.tar.gz
+```
+
+If you already have fixed shim objects, the archive assembly step can run on a
+non-illumos host:
+
+```
+$ scripts/assemble-sysroot-from-repo.sh \
+    /ws/oldgate/packages/i386/nightly-nd/repo.redist \
+    /path/to/prebuilt-shims
+```
+
+The prebuilt shim directory must contain `usr/lib/libgcc_s.so.1`,
+`usr/lib/amd64/libgcc_s.so.1`, `usr/lib/libssp.so.0.0.0`, and
+`usr/lib/amd64/libssp.so.0.0.0`.  To seed this directory from an existing
+sysroot archive:
+
+```
+$ scripts/extract-prebuilt-shims.sh \
+    output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz \
+    /path/to/prebuilt-shims
 ```
 
 Note that by default, the archive will be named with a custom version string to

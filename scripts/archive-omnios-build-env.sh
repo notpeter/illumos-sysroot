@@ -109,7 +109,7 @@ verify_archives() {
 	extra=$3
 
 	create_image "$image" "$core" "$extra"
-	fmri_args=$(cat "$outdir/install.fmris")
+	fmri_args=$(cat "$outdir/requested.fmris")
 	# shellcheck disable=SC2086
 	run_as_root pkg -R "$image" install -n --accept --no-refresh $fmri_args \
 		> "$outdir/replay-verify.txt" 2>&1
@@ -141,7 +141,7 @@ mkdir -p "$outdir"
 mkdir -p "$workdir"
 rm -f "$outdir/SHA256SUMS"
 
-pkg list -Hv | awk '{ print $1 }' | sort > "$outdir/host-installed.fmris"
+pkg list -Hv | awk '{ print $1 }' | sort > "$outdir/host-before.fmris"
 pkg publisher -H > "$outdir/host-publishers.txt"
 
 create_image "$scratch" "$core_source" "$extra_source"
@@ -149,7 +149,8 @@ create_image "$scratch" "$core_source" "$extra_source"
 printf '%s\n' "$@" > "$outdir/requested-packages.txt"
 pkg_install_image "$scratch" "$@"
 
-pkg -R "$scratch" list -Hv | awk '{ print $1 }' | sort > "$outdir/install.fmris"
+pkg -R "$scratch" list -Hv | awk '{ print $1 }' | sort \
+	> "$outdir/install.fmris"
 pkg -R "$scratch" publisher -H > "$outdir/scratch-publishers.txt"
 pkg -R "$scratch" list -Hv "$@" | awk '{ print $1 }' | sort \
 	> "$outdir/requested.fmris"
@@ -175,6 +176,7 @@ append_sha256 "$outdir/scratch-publishers.txt"
 append_sha256 "$outdir/requested-packages.txt"
 append_sha256 "$outdir/requested.fmris"
 append_sha256 "$outdir/install.fmris"
+append_sha256 "$outdir/host-before.fmris"
 append_sha256 "$outdir/omnios.fmris"
 append_sha256 "$outdir/extra.omnios.fmris"
 
