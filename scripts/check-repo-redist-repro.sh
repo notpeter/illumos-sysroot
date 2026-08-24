@@ -15,9 +15,12 @@ Options:
   -w WORKDIR        working directory (default: $PWD/.sysroot-repo-repro)
   -o OUTDIR         comparison output directory (default: $PWD/output/repo-repro)
   -j JOBS           override DMAKE_MAX_JOBS for each nightly run
+  -s                use the same absolute build path for both runs
 
-The script runs two clean build workdirs, fingerprints each resulting
-packages/i386/nightly-nd/repo.redist, and writes diff output under OUTDIR.
+By default, the script runs two clean build workdirs.  With -s, it runs both
+builds under WORKDIR/build, deleting that directory between runs.  Each
+resulting packages/i386/nightly-nd/repo.redist is fingerprinted, and diff
+output is written under OUTDIR.
 EOF
 }
 
@@ -30,13 +33,15 @@ release=20231226
 workdir=
 outdir=
 jobs=
+same_path=false
 
-while getopts "r:w:o:j:h" opt; do
+while getopts "r:w:o:j:sh" opt; do
 	case "$opt" in
 	r) release=$OPTARG ;;
 	w) workdir=$OPTARG ;;
 	o) outdir=$OPTARG ;;
 	j) jobs=$OPTARG ;;
+	s) same_path=true ;;
 	h) usage; exit 0 ;;
 	*) usage; exit 2 ;;
 	esac
@@ -52,13 +57,30 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 workdir=${workdir:-$repo_root/.sysroot-repo-repro}
 outdir=${outdir:-$repo_root/output/repo-repro}
 
+build_workdir() {
+	run=$1
+
+	if $same_path; then
+		printf '%s\n' "$workdir/build"
+	else
+		printf '%s\n' "$workdir/$run"
+	fi
+}
+
 run_build() {
 	run=$1
-	run_workdir=$workdir/$run
+	run_workdir=$(build_workdir "$run")
 	run_output=$outdir/$run/archive
 
-	[ ! -e "$run_workdir" ] ||
-		die "refusing to reuse existing build workdir: $run_workdir"
+	if $same_path; then
+		case "$run_workdir" in
+		"$workdir"/build) rm -rf -- "$run_workdir" ;;
+		*) die "refusing unsafe same-path workdir: $run_workdir" ;;
+		esac
+	else
+		[ ! -e "$run_workdir" ] ||
+			die "refusing to reuse existing build workdir: $run_workdir"
+	fi
 	[ ! -e "$run_output" ] ||
 		die "refusing to reuse existing archive output: $run_output"
 
@@ -76,7 +98,8 @@ run_build() {
 
 fingerprint_run() {
 	run=$1
-	repo=$workdir/$run/illumos-gate/packages/i386/nightly-nd/repo.redist
+	run_workdir=$(build_workdir "$run")
+	repo=$run_workdir/illumos-gate/packages/i386/nightly-nd/repo.redist
 	[ -d "$repo/file" ] && [ -d "$repo/pkg" ] ||
 		die "missing repo.redist for $run: $repo"
 
@@ -101,6 +124,31 @@ compare_file() {
 	rm -f "$diffout"
 }
 
+archive_sha_file() {
+	run=$1
+	set -- "$outdir/$run/archive"/*.sha256
+	[ "$#" -eq 1 ] && [ -f "$1" ] ||
+		die "could not find exactly one archive checksum for $run"
+	printf '%s\n' "$1"
+}
+
+compare_archive() {
+	left=$(archive_sha_file run1)
+	right=$(archive_sha_file run2)
+	diffout=$outdir/archive.sha256.diff
+
+	set +e
+	diff -u "$left" "$right" > "$diffout"
+	status=$?
+	set -e
+	if [ "$status" -ne 0 ]; then
+		printf 'archive sha256 differs: %s\n' "$diffout"
+		return 1
+	fi
+	rm -f "$diffout"
+	printf 'archive sha256 matches: %s\n' "$left"
+}
+
 mkdir -p "$workdir" "$outdir"
 workdir=$(CDPATH= cd -- "$workdir" && pwd)
 outdir=$(CDPATH= cd -- "$outdir" && pwd)
@@ -112,6 +160,9 @@ run_build run2
 fingerprint_run run2
 
 failed=false
+if ! compare_archive; then
+	failed=true
+fi
 for name in paths.all paths.files files.sha256 file-payloads.sha256 pkg-manifests.sha256; do
 	if ! compare_file "$name"; then
 		failed=true

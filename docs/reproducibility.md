@@ -187,6 +187,147 @@ GitHub/vmactions to provide the VM image and source checkout, the builder still
 fetches illumos-gate from Git, and `mf2tar` still uses Cargo normally.  Cargo
 dependency vendoring is intentionally out of scope for now.
 
+## `repo.redist` reproducibility checks
+
+Use `scripts/check-repo-redist-repro.sh` to build illumos-gate twice and compare
+normalized fingerprints of each resulting `repo.redist`:
+
+```sh
+scripts/check-repo-redist-repro.sh -r 20231226 -w /path/to/work -o /path/to/out -j 4
+```
+
+The comparison writes:
+
+* `paths.all`
+* `paths.files`
+* `files.sha256`
+* `file-payloads.sha256`
+* `pkg-manifests.sha256`
+* one `.diff` file per mismatch
+
+On 2026-08-23, two clean builds in different absolute work directories on the
+local OmniOS r151046 VM both completed successfully, but the `repo.redist`
+fingerprints differed:
+
+```text
+work: /home/peter/ws/repo-redist-repro-20260823T005422
+out:  /home/peter/ws/repo-redist-repro-output-20260823T005422
+
+run1 all-files-sha256:      9e66cf5abd100972226f63d14522b715125498a1b46caf3361240e7740984fcf
+run2 all-files-sha256:      5da277ff6f167eee9f64e4071d0d26daa88874b3da48f20eb1359e78258b10e5
+run1 file-payloads-sha256:  50e7d67a1f137272b0ba853f432093c27fb7fbe46f8a569e22f25c831f2625d6
+run2 file-payloads-sha256:  766b680fff8b31a917b9bd02310cf2352aa641bf1cc69d6da68de96ce4540855
+```
+
+A sampled `libgss.so.1` payload embedded the absolute build directory path,
+which explains some of that mismatch.
+
+The same script supports `-s` to reuse one absolute build path and delete it
+between runs:
+
+```sh
+scripts/check-repo-redist-repro.sh -s -r 20231226 -w /path/to/work -o /path/to/out -j 4
+```
+
+On the same VM, the same-path run also completed both builds successfully, but
+`repo.redist` still differed:
+
+```text
+work: /home/peter/ws/repo-redist-repro-samepath-20260823T125413
+out:  /home/peter/ws/repo-redist-repro-samepath-output-20260823T125413
+
+run1 all-files-sha256:      4858dcc0d4537582aa1ea52139278b69e2137ce785da00421c54a4babcda8766
+run2 all-files-sha256:      4a94db7ed0cffbe53da7f96abe8e481fd6e19a98a025bf51c8384e074c7390ec
+run1 file-payloads-sha256:  3885021a10c9e3246a5e33e52e5a9e6cbce1bcf869286d3134bf17311126f7a6
+run2 file-payloads-sha256:  2e3c96672a265538d18094a451cf96cffecb864580b575419f0ba62e3402b9bb
+```
+
+Extracting the two same-path sysroot archives showed identical symlink targets
+but differing file contents.  The sysroot-relevant differences were narrowed to
+`libc` outputs and `libssp_ns.a`, including:
+
+* `lib/amd64/libc.so.1`
+* `lib/libc.so.1`
+* `usr/lib/libc/libc_hwcap*.so.1`
+* `usr/lib/amd64/libssp_ns.a`
+* `usr/lib/libssp_ns.a`
+
+One `libc.so.1` difference is in generated DTrace symbol names such as
+`$dtrace7375612.mutex_lock_impl` versus
+`$dtrace7375146.mutex_lock_impl`.  So fixed absolute paths are not enough for
+strict reproducibility.
+
+A follow-up same-path run with fixed IPS publication timestamps and deterministic
+`libssp_ns.a` archive creation still differed:
+
+```text
+work: /home/peter/ws/repo-redist-repro-patched-samepath-20260823T204200
+out:  /home/peter/ws/repo-redist-repro-patched-samepath-output-20260823T204200
+
+run1 archive sha256:        57d546dc9899dadac1ec2132c4687ea64722311cc30119932d59cb020f480987
+run2 archive sha256:        b9f13a838748bfd1a291857d1fe82897eec8394f7ff351cb3b07fd49a8b1d953
+run1 all-files-sha256:      c0888a612c119a59620e2ab7422761beeca29334e321454b827a69dd77cb7c1c
+run2 all-files-sha256:      ad5b898f8213ff346e401853d126ceddd08664f2470c3a9ca226c7e481020c5d
+run1 file-payloads-sha256:  5c1b79aa975ca59ad345bb2068b3d9532a7ac1c32dbd4eeb0872d6240f092e35
+run2 file-payloads-sha256:  69383186dc59d204c9456e19e4a48043be104314da19f702dd35cfc1bc47cd53
+run1 pkg-manifests-sha256:  2c101aec41444aab4c7054c05342803592986163ddc4eae57cd33ea2fafeac29
+run2 pkg-manifests-sha256:  9b7482b52bc4a4bc901666b97cb26e1410bf5a2f90938b61c6816215a9a86744
+```
+
+For the sysroot archive itself, the remaining file-content differences were
+only `libc` and its hwcap variants:
+
+* `lib/amd64/libc.so.1`
+* `lib/libc.so.1`
+* `usr/lib/libc/libc_hwcap*.so.1`
+
+`libssp_ns.a` no longer differed.  The remaining `libc` bytes were again only
+the DTrace-generated `$dtraceNNNNNNN` symbol suffix.  Normalizing those suffixes
+to a fixed seven-digit value made the two extracted `lib/libc.so.1` files
+byte-identical in a targeted test.  `scripts/build-omnios-sysroot.sh` now
+exports a `DTRACE` wrapper for nightly builds so host `dtrace -G` output objects
+are normalized before they are linked.
+
+A later same-path run with the `DTRACE` wrapper completed both gate builds and
+produced byte-identical sysroot archives:
+
+```text
+work: /home/peter/ws/repo-redist-repro-dtracewrap3-samepath-20260823T233000
+out:  /home/peter/ws/repo-redist-repro-dtracewrap3-samepath-output-20260823T233000
+
+run1 archive sha256: e6c1493513788da5346e2cad1dd0ff59c27bce4fc60c9bd26b7576649feba334
+run2 archive sha256: e6c1493513788da5346e2cad1dd0ff59c27bce4fc60c9bd26b7576649feba334
+entries:             2629
+```
+
+The complete `repo.redist` still differed.  The remaining full-repository
+differences included wall-clock catalog update names
+(`catalog/update.20260823T23Z.C` versus `catalog/update.20260824T00Z.C`) and
+manifest or payload differences in packages outside the archive's explicit
+package set:
+
+* `SUNWcs`
+* `consolidation/osnet/osnet-message-files`
+* `developer/build/onbld`
+* `developer/dtrace`
+* `library/libadt_jni`
+* `service/network/slp`
+* `service/resource-pools/poold`
+* `system/dtrace/tests`
+
+The archive package set was unchanged and did not appear in the differing
+package manifest list:
+
+* `system/header`
+* `system/library`
+* `system/library/math`
+* `system/library/c-runtime`
+* `system/library/security/gss`
+
+So, as of this run, the produced sysroot archive is reproducible under the
+same absolute build path, but the full `repo.redist` is not yet strictly
+reproducible.
+
 ## Remaining official release work
 
 To make `20231226-ae676b1204fb-v1` reproducible as an official sysroot:
