@@ -23,6 +23,8 @@ Environment:
   GATE_COMMIT       illumos-gate commit; defaults from profiles/$RELEASE.mk
   GATE_BRANCH       local branch name (default: sysroot/$RELEASE)
   SOURCE_DATE_EPOCH reproducible build timestamp; defaults from profiles/$RELEASE.mk
+  ILLUMOS_SYSROOT_PREPARE_ONLY
+                     stop after preparing and patching the gate (default: unset)
 EOF
 }
 
@@ -335,6 +337,7 @@ EOF
 
 set -u
 
+real_dtrace=${ILLUMOS_SYSROOT_REAL_DTRACE:-/usr/sbin/dtrace}
 is_generate=false
 out=
 script=
@@ -378,7 +381,7 @@ do
 done
 
 set +e
-/usr/sbin/dtrace "$@"
+"$real_dtrace" "$@"
 status=$?
 set -e
 [ "$status" -eq 0 ] || exit "$status"
@@ -405,18 +408,242 @@ if $is_generate && [ -n "${ILLUMOS_SYSROOT_DTRACE_SUFFIX:-}" ]; then
 	fi
 	set -- $files
 	if [ "$#" -gt 0 ]; then
-		perl -0pi -e '
-	    BEGIN {
-	        $suffix = $ENV{"ILLUMOS_SYSROOT_DTRACE_SUFFIX"};
-	        die "ILLUMOS_SYSROOT_DTRACE_SUFFIX must be seven digits\n"
-	            unless defined($suffix) && $suffix =~ /^[0-9]{7}$/;
-	    }
-	    s/\$dtrace[0-9]{7}/\$dtrace$suffix/g;
-		' "$@"
+		perl - "$@" <<'PERL'
+use strict;
+use warnings;
+
+my $suffix = $ENV{"ILLUMOS_SYSROOT_DTRACE_SUFFIX"};
+die "ILLUMOS_SYSROOT_DTRACE_SUFFIX must be seven digits\n"
+    unless defined($suffix) && $suffix =~ /^[0-9]{7}$/;
+
+sub u32le {
+	my ($data, $offset) = @_;
+	return unpack("V", substr($data, $offset, 4));
+}
+
+sub u64le_small {
+	my ($data, $offset) = @_;
+	my $low = u32le($data, $offset);
+	my $high = u32le($data, $offset + 4);
+	return undef if $high != 0;
+	return $low;
+}
+
+sub normalize_dof {
+	my ($dataref) = @_;
+	my $cursor = 0;
+	my $changed = 0;
+
+	while ((my $base = index($$dataref, "\x7fDOF", $cursor)) >= 0) {
+		$cursor = $base + 4;
+		next if $base + 64 > length($$dataref);
+		next unless ord(substr($$dataref, $base + 5, 1)) == 1;
+
+		my $hdrsize = u32le($$dataref, $base + 20);
+		my $secsize = u32le($$dataref, $base + 24);
+		my $secnum = u32le($$dataref, $base + 28);
+		my $secoff = u64le_small($$dataref, $base + 32);
+		my $filesz = u64le_small($$dataref, $base + 48);
+		next unless defined($secoff) && defined($filesz);
+		next unless $hdrsize >= 64 && $secsize >= 32;
+		next if $base + $filesz > length($$dataref);
+		next if $secoff + $secnum * $secsize > $filesz;
+
+		for my $i (0 .. $secnum - 1) {
+			my $section = $base + $secoff + $i * $secsize;
+			next unless u32le($$dataref, $section) == 5;
+			my $entsize = u32le($$dataref, $section + 12);
+			my $offset = u64le_small($$dataref, $section + 16);
+			my $size = u64le_small($$dataref, $section + 24);
+			next unless defined($offset) && defined($size);
+			next unless $entsize >= 32 && $size % $entsize == 0;
+			next if $offset + $size > $filesz;
+
+			for (my $action = 0; $action < $size; $action += $entsize) {
+				my $uarg = $base + $offset + $action + 24;
+				my $zero = "\0" x 8;
+				if (substr($$dataref, $uarg, 8) ne $zero) {
+					substr($$dataref, $uarg, 8) = $zero;
+					$changed = 1;
+				}
+			}
+		}
+
+		$cursor = $base + $filesz;
+	}
+
+	return $changed;
+}
+
+for my $path (@ARGV) {
+	open(my $in, "<", $path) or die "open $path: $!\n";
+	binmode($in);
+	local $/;
+	my $data = <$in>;
+	close($in) or die "close $path: $!\n";
+
+	my $changed = ($data =~ s/\$dtrace[0-9]{7}/\$dtrace$suffix/g);
+	$changed += normalize_dof(\$data);
+	next unless $changed;
+
+	open(my $out, ">", $path) or die "open $path: $!\n";
+	binmode($out);
+	print $out $data;
+	close($out) or die "close $path: $!\n";
+}
+PERL
 	fi
 fi
 EOF
-	chmod +x "$repro_tools_dir/jar" "$repro_tools_dir/dtrace"
+	cat > "$repro_tools_dir/sqlite2-normalize.c" <<'EOF'
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "sqlite.h"
+
+static const unsigned char sqlite2_magic[] =
+    "** This file contains an SQLite 2.1 database **";
+
+static void
+fatal(const char *path, const char *what)
+{
+	(void) fprintf(stderr, "%s: %s: %s\n", path, what, strerror(errno));
+	exit(1);
+}
+
+int
+main(int argc, char **argv)
+{
+	unsigned long cookie;
+	unsigned char header[64];
+	unsigned char encoded[4];
+	char *end = NULL;
+	char *error = NULL;
+	sqlite *db;
+	int fd;
+
+	if (argc != 3) {
+		(void) fprintf(stderr, "usage: %s COOKIE SQLITE2_DB\n", argv[0]);
+		return (2);
+	}
+
+	errno = 0;
+	cookie = strtoul(argv[1], &end, 10);
+	if (errno != 0 || end == argv[1] || *end != '\0' ||
+	    cookie > UINT32_MAX) {
+		(void) fprintf(stderr, "invalid cookie: %s\n", argv[1]);
+		return (2);
+	}
+
+	db = sqlite_open(argv[2], 0600, &error);
+	if (db == NULL) {
+		(void) fprintf(stderr, "%s: sqlite_open: %s\n", argv[2],
+		    error != NULL ? error : "unknown error");
+		free(error);
+		return (1);
+	}
+	if (sqlite_exec(db, "VACUUM;", NULL, NULL, &error) != SQLITE_OK) {
+		(void) fprintf(stderr, "%s: VACUUM: %s\n", argv[2],
+		    error != NULL ? error : "unknown error");
+		free(error);
+		sqlite_close(db);
+		return (1);
+	}
+	sqlite_close(db);
+
+	fd = open(argv[2], O_RDWR);
+	if (fd < 0)
+		fatal(argv[2], "open");
+	if (pread(fd, header, sizeof (header), 0) != sizeof (header))
+		fatal(argv[2], "read header");
+	if (memcmp(header, sqlite2_magic, sizeof (sqlite2_magic)) != 0 ||
+	    header[48] != 0x28 || header[49] != 0x75 ||
+	    header[50] != 0xe3 || header[51] != 0xda) {
+		(void) fprintf(stderr, "%s: unsupported SQLite 2 header\n", argv[2]);
+		(void) close(fd);
+		return (1);
+	}
+
+	encoded[0] = cookie & 0xff;
+	encoded[1] = (cookie >> 8) & 0xff;
+	encoded[2] = (cookie >> 16) & 0xff;
+	encoded[3] = (cookie >> 24) & 0xff;
+	if (pwrite(fd, encoded, sizeof (encoded), 60) != sizeof (encoded))
+		fatal(argv[2], "write schema cookie");
+	if (fsync(fd) != 0)
+		fatal(argv[2], "fsync");
+	if (close(fd) != 0)
+		fatal(argv[2], "close");
+
+	return (0);
+}
+EOF
+	cat > "$repro_tools_dir/pkg-tool.py" <<'EOF'
+"""Run an IPS command with reproducible time and iteration order."""
+
+import datetime
+import os
+import runpy
+import sys
+
+epoch = int(os.environ["SOURCE_DATE_EPOCH"])
+real_datetime = datetime.datetime
+fixed = real_datetime.utcfromtimestamp(epoch)
+
+
+class ReproducibleDateTime(real_datetime):
+    @classmethod
+    def utcnow(cls):
+        return cls(fixed.year, fixed.month, fixed.day, fixed.hour,
+                   fixed.minute, fixed.second, fixed.microsecond)
+
+    @classmethod
+    def now(cls, tz=None):
+        value = cls.utcnow()
+        if tz is None:
+            return value
+        return tz.fromutc(value.replace(tzinfo=tz))
+
+
+datetime.datetime = ReproducibleDateTime
+tool = sys.argv.pop(1)
+if os.path.basename(tool) == "pkgrepo":
+    import pkg.site_paths
+
+    pkg.site_paths.init()
+    import pkg.indexer
+
+    original_process_fmris = pkg.indexer.Indexer._process_fmris
+
+    def reproducible_process_fmris(self, fmris):
+        # IPS assigns manifest IDs in input order; catalog insertion order varies.
+        return original_process_fmris(self, sorted(fmris, key=str))
+
+    pkg.indexer.Indexer._process_fmris = reproducible_process_fmris
+
+sys.argv[0] = tool
+runpy.run_path(tool, run_name="__main__")
+EOF
+	for pkg_tool in pkgdepend pkgrepo pkgsend; do
+		cat > "$repro_tools_dir/$pkg_tool" <<'EOF'
+#!/bin/sh
+
+set -eu
+
+tool=${0##*/}
+tool_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export PYTHONHASHSEED=0
+exec /usr/bin/python3.11 -s "$tool_dir/pkg-tool.py" "/usr/bin/$tool" "$@"
+EOF
+	done
+	chmod +x "$repro_tools_dir/jar" "$repro_tools_dir/dtrace" \
+		"$repro_tools_dir/pkgdepend" "$repro_tools_dir/pkgrepo" \
+		"$repro_tools_dir/pkgsend"
 }
 
 apply_gate_repro_patches() {
@@ -433,7 +660,7 @@ apply_gate_repro_patches() {
 	fi
 
 	if ! grep -q 'PKG_PUBLICATION_TIMESTAMP' "$gate_dir/usr/src/pkg/Makefile"; then
-		perl -0pi -e '
+		REPRO_PKGSEND=$repro_tools_dir/pkgsend perl -0pi -e '
 		    my $fin = "\t\t    \$(<) \$(PM_FINAL_TRANSFORMS); \\\n";
 		    my $ts = "\t\tif [ -n \"\$(PKG_PUBLICATION_TIMESTAMP)\" ]; then \\\n" .
 			"\t\t\t\$(SED) -e \"/^set name=pkg.fmri value=/s/\$\$\/:\$(PKG_PUBLICATION_TIMESTAMP)\/\" \\\n" .
@@ -443,9 +670,9 @@ apply_gate_repro_patches() {
 		    s/\Q$fin\E/$fin$ts/ or die;
 		    my $pub = "\t\tpkgsend -s file://\$(PKGDEST)/repo.\$\$r publish \\\n";
 		    my $pubts = "\t\tif [ -n \"\$(PKG_PUBLICATION_TIMESTAMP)\" ]; then \\\n" .
-			"\t\t\tPKGSEND=\"pkgsend -D allow-timestamp\"; \\\n" .
+			"\t\t\tPKGSEND=\"$ENV{REPRO_PKGSEND} -D allow-timestamp\"; \\\n" .
 			"\t\telse \\\n" .
-			"\t\t\tPKGSEND=pkgsend; \\\n" .
+			"\t\t\tPKGSEND=$ENV{REPRO_PKGSEND}; \\\n" .
 			"\t\tfi; \\\n" .
 			"\t\t\$\$PKGSEND -s file://\$(PKGDEST)/repo.\$\$r publish \\\n";
 		    s/\Q$pub\E/$pubts/ or die;
@@ -462,6 +689,137 @@ apply_gate_repro_patches() {
 	fi
 
 	repro_tools_dir=$workdir/repro-tools
+	if ! grep -q 'ILLUMOS_SYSROOT_REPRO_SQLITE' \
+		"$gate_dir/usr/src/lib/libsqlite/Makefile.com"; then
+		perl -0pi -e '
+		    my $old = "\$(NATIVETARGETS) :=\tCPPFLAGS = \$(MYCPPFLAGS)\n";
+		    my $new = "\$(NATIVETARGETS) :=\tCPPFLAGS = \$(MYCPPFLAGS) " .
+			"-DILLUMOS_SYSROOT_REPRO_SQLITE\n";
+		    s/\Q$old\E/$new/ or die;
+		' "$gate_dir/usr/src/lib/libsqlite/Makefile.com"
+
+		perl -0pi -e '
+		    my $needle = "  assert( size == ROUNDUP(size) );\n" .
+			"  assert( start == ROUNDUP(start) );\n" .
+			"  assert( pPage->isInit );\n" .
+			"  pIdx = \&pPage->u.hdr.firstFree;\n";
+		    my $replace = "  assert( size == ROUNDUP(size) );\n" .
+			"  assert( start == ROUNDUP(start) );\n" .
+			"  assert( pPage->isInit );\n" .
+			"#ifdef ILLUMOS_SYSROOT_REPRO_SQLITE\n" .
+			"  memset(\&pPage->u.aDisk[start], 0, size);\n" .
+			"#endif\n" .
+			"  pIdx = \&pPage->u.hdr.firstFree;\n";
+		    s/\Q$needle\E/$replace/ or die;
+		    my $cell = "  rc = fillInCell(pBt, \&newCell, pKey, nKey, pData, nData);\n";
+		    my $zero = "#ifdef ILLUMOS_SYSROOT_REPRO_SQLITE\n" .
+			"  memset(\&newCell, 0, sizeof(newCell));\n" .
+			"#endif\n" . $cell;
+		    s/\Q$cell\E/$zero/ or die;
+		' "$gate_dir/usr/src/lib/libsqlite/src/btree.c"
+
+		perl -0pi -e '
+		    my $old = "#if OS_UNIX \&\& !defined(SQLITE_TEST)\n";
+		    my $new = "#if OS_UNIX \&\& !defined(SQLITE_TEST) \&\& " .
+			"!defined(ILLUMOS_SYSROOT_REPRO_SQLITE)\n";
+		    s/\Q$old\E/$new/ or die;
+		' "$gate_dir/usr/src/lib/libsqlite/src/os.c"
+
+		perl -0pi -e '
+		    my $old = "void *sqliteMallocRaw(int n){\n" .
+			"  void *p;\n" .
+			"  if( (p = malloc(n))==0 ){\n" .
+			"    if( n>0 ) sqlite_malloc_failed++;\n" .
+			"  }\n" .
+			"  return p;\n" .
+			"}\n";
+		    my $new = "void *sqliteMallocRaw(int n){\n" .
+			"  void *p;\n" .
+			"  if( (p = malloc(n))==0 ){\n" .
+			"    if( n>0 ) sqlite_malloc_failed++;\n" .
+			"#ifdef ILLUMOS_SYSROOT_REPRO_SQLITE\n" .
+			"  }else{\n" .
+			"    memset(p, 0, n);\n" .
+			"#endif\n" .
+			"  }\n" .
+			"  return p;\n" .
+			"}\n";
+		    s/\Q$old\E/$new/ or die;
+		' "$gate_dir/usr/src/lib/libsqlite/src/util.c"
+	fi
+
+	if ! grep -Fq "$repro_tools_dir/sqlite2-normalize" \
+		"$gate_dir/usr/src/cmd/svc/seed/Makefile"; then
+		REPRO_SQLITE=$repro_tools_dir/sqlite2-normalize \
+		REPRO_SQLITE_SOURCE=$repro_tools_dir/sqlite2-normalize.c \
+		perl -0pi -e '
+		    my $tools = "SVCCFG = ../svccfg/svccfg-native\n";
+		    my $vars = $tools . "\n" .
+			"REPRO_SQLITE =\t\t$ENV{REPRO_SQLITE}\n" .
+			"REPRO_SQLITE_SOURCE =\t$ENV{REPRO_SQLITE_SOURCE}\n" .
+			"REPRO_SQLITE_OBJECT =\t\$(ROOT)/lib/libsqlite-native.o\n";
+		    s/\Q$tools\E/$vars/ or die;
+
+		    my $configd = "\$(CONFIGD): FRC\n";
+		    my $rule = "\$(REPRO_SQLITE): \$(CONFIGD) \$(REPRO_SQLITE_SOURCE)\n" .
+			"\t\$(RM) \$@\n" .
+			"\t\$(NATIVECC) \$(NATIVE_CFLAGS) -I\$(SRC)/lib/libsqlite " .
+			"-o \$@ \$(REPRO_SQLITE_SOURCE) \$(REPRO_SQLITE_OBJECT)\n\n" .
+			$configd;
+		    s/\Q$configd\E/$rule/ or die;
+
+		    for my $target (qw(global.db nonglobal.db miniroot.db)) {
+			my $head = "$target: common.db";
+			s/\Q$head\E/$head \$(REPRO_SQLITE)/ or die;
+		    }
+		    my $global = "\t\$(IMPORT.mfst) \$(GLOBAL_ZONE_DESCRIPTIONS)\n";
+		    s/\Q$global\E/$global\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
+		    my $nonglobal = "\t\$(IMPORT.mfst) \$(NONGLOBAL_ZONE_DESCRIPTIONS)\n";
+		    s/\Q$nonglobal\E/$nonglobal\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
+		    my $last = "\t    setprop config/local_only = true\n";
+		    s/\Q$last\E/$last\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
+		' "$gate_dir/usr/src/cmd/svc/seed/Makefile"
+	fi
+
+	if ! grep -q 'LC_ALL=C.*SORT' "$gate_dir/usr/src/lib/pyzfs/Makefile"; then
+		perl -0pi -e '
+		    my $old = "MSGFIND =\t\$(FIND) . -name '\''*.py'\'' -o -name '\''*.c'\''\n";
+		    my $new = "MSGFIND =\t\$(FIND) . -name '\''*.py'\'' -o " .
+			"-name '\''*.c'\'' | LC_ALL=C \$(SORT)\n";
+		    s/\Q$old\E/$new/ or die;
+		' "$gate_dir/usr/src/lib/pyzfs/Makefile"
+	fi
+
+	if ! grep -Fq "$repro_tools_dir/pkgrepo" "$gate_dir/usr/src/pkg/Makefile"; then
+		REPRO_PKGREPO=$repro_tools_dir/pkgrepo perl -0pi -e '
+		    my $old = "\t\tpkgrepo refresh -s \$(PKGDEST)/repo.\$\$r; \\\n";
+		    my $new = "\t\t$ENV{REPRO_PKGREPO} refresh " .
+			"-s \$(PKGDEST)/repo.\$\$r; \\\n";
+		    s/\Q$old\E/$new/ or die;
+		' "$gate_dir/usr/src/pkg/Makefile"
+	fi
+
+	if ! grep -Fq "$repro_tools_dir/pkgdepend" "$gate_dir/usr/src/pkg/Makefile"; then
+		REPRO_PKGDEPEND=$repro_tools_dir/pkgdepend perl -pi -e '
+		    s{^\t\tpkgdepend -R }{\t\t$ENV{REPRO_PKGDEPEND} -R };
+		    s{^\t\tpkgdepend generate }{\t\t$ENV{REPRO_PKGDEPEND} generate };
+		' "$gate_dir/usr/src/pkg/Makefile"
+		grep -Fq "$repro_tools_dir/pkgdepend -R" \
+			"$gate_dir/usr/src/pkg/Makefile" || die "patching pkgdepend resolve"
+		grep -Fq "$repro_tools_dir/pkgdepend generate" \
+			"$gate_dir/usr/src/pkg/Makefile" || die "patching pkgdepend generate"
+	fi
+
+	if grep -Fq '$(PKGDEBUG)pkgsend -s file://$(@) create-repository' \
+		"$gate_dir/usr/src/pkg/Makefile"; then
+		REPRO_PKGSEND=$repro_tools_dir/pkgsend perl -0pi -e '
+		    my $old = "\t\$(PKGDEBUG)pkgsend -s file://\$(@) create-repository \\\n";
+		    my $new = "\t\$(PKGDEBUG)$ENV{REPRO_PKGSEND} " .
+			"-s file://\$(@) create-repository \\\n";
+		    s/\Q$old\E/$new/ or die;
+		' "$gate_dir/usr/src/pkg/Makefile"
+	fi
+
 	if ! grep -Fq "$repro_tools_dir/jar" "$gate_dir/usr/src/Makefile.master"; then
 		REPRO_JAR=$repro_tools_dir/jar perl -0pi -e '
 		    my $needle = "JAR=\t\t\$(JAVA_ROOT)/bin/jar\n";
@@ -554,6 +912,9 @@ checkout_gate
 prepare_repro_tools
 prepare_env_file
 apply_gate_repro_patches
+if [ "${ILLUMOS_SYSROOT_PREPARE_ONLY:-}" = 1 ]; then
+	exit 0
+fi
 run_nightly
 check_nightly_summary
 build_archive

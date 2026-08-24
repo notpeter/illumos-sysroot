@@ -388,8 +388,116 @@ Implementation-Version: [Mon Aug 24 03:45:16 UTC 2026]
 The wrapper now also normalizes bracketed `Implementation-Version` timestamp
 values to the `SOURCE_DATE_EPOCH` date string.  This was validated with a
 targeted OmniOS wrapper test that produced byte-identical JARs from manifests
-with different wall-clock `Implementation-Version` values, but a full gate
-rerun has not yet been done with this additional manifest normalization.
+with different wall-clock `Implementation-Version` values.
+
+A full same-path follow-up completed with the manifest normalization enabled:
+
+```text
+work: /home/peter/ws/repo-redist-repro-slpmanifest-samepath-20260824T042145Z
+out:  /home/peter/ws/repo-redist-repro-slpmanifest-samepath-output-20260824T042145Z
+
+run1 archive sha256: b9aaa56ae5b08f3b116d3361dd20ce662c75bd70176e56c793e77ee6b7b4c8b1
+run2 archive sha256: b9aaa56ae5b08f3b116d3361dd20ce662c75bd70176e56c793e77ee6b7b4c8b1
+entries:             2629
+```
+
+Both SLP JAR payloads matched in that run.  The remaining payload differences
+were the three SQLite2 seed databases, the pyzfs message catalog, and the two
+DTrace ustack test executables listed above.  Package manifest differences
+remained in `SUNWcs`, `consolidation/osnet/osnet-message-files`,
+`developer/build/onbld`, and `system/dtrace/tests`.  The comparison script now
+preserves each run's complete `pkg/` manifest tree so future runs can show the
+exact `developer/build/onbld` metadata difference instead of only its hash.
+
+The remaining payload classes have now been traced and narrowly tested:
+
+* The seed files are SQLite 2.1 databases.  Their schemas, table contents,
+  rowids, and root pages matched even though their physical bytes did not.
+  Directly replacing the four-byte schema cookie was insufficient, and even
+  repeated `VACUUM` operations were nondeterministic with the stock native
+  SQLite2 writer.  Reproducibility-only native SQLite changes now use a fixed
+  random seed and zero raw allocations, freed page regions, and rounded cell
+  padding.  A generated native tool runs `VACUUM` after each final seed update
+  and writes the `SOURCE_DATE_EPOCH` as its schema cookie.  The tool compiled
+  through the patched seed makefile and made all three preserved run1/run2
+  database pairs byte-identical.
+* `SUNW_OST_OSLIB.po` contained the same messages in a different order because
+  `usr/src/lib/pyzfs/Makefile` passed unsorted `find` output to `xgettext`.
+  Reproducibility mode now sorts that input under `LC_ALL=C`.
+* Each ustack executable differed only in the low bytes of
+  `DOF_SECT_ACTDESC.dofa_uarg`.  This is an in-process statement-descriptor
+  pointer serialized into helper DOF by the host `dtrace -G`.  The DTrace
+  wrapper now parses generated DOF and zeros only those eight-byte action
+  fields.  Applying it to both preserved executable pairs made each pair
+  byte-identical.
+* Repository refresh used the wall clock for catalog update names and catalog
+  attributes.  The generated `pkgrepo` wrapper pins Python `utcnow()` calls to
+  `SOURCE_DATE_EPOCH`.  Refreshing two identical disposable repositories at
+  different wall-clock times produced byte-identical trees.
+
+A full same-path comparison completed with the SQLite, pyzfs, DTrace DOF, and
+initial fixed-time catalog patch set:
+
+```text
+work: /home/peter/ws/repo-redist-repro-finalset-samepath-20260824T0845Z
+out:  /home/peter/ws/repo-redist-repro-finalset-samepath-output-20260824T0845Z
+
+run1 archive sha256: 6f5d144cc9add03072374081bf29e1817daacc4cd113594f08a60e77d8d93ee4
+run2 archive sha256: 6f5d144cc9add03072374081bf29e1817daacc4cd113594f08a60e77d8d93ee4
+entries:             2629
+```
+
+This eliminated every payload and package-manifest difference.  Repository
+paths, content-addressed payloads, package manifests, and parsed file actions
+all matched.  Only `catalog/catalog.attrs` and the search `index/` contents
+differed.  The remaining causes were outside the initial `pkgrepo refresh`
+wrapper:
+
+* `pkgsend create-repository` recorded the wall clock in the catalog's
+  `created` field.
+* Search index generation used Python hash-based iteration with a randomized
+  per-process hash seed, visibly changing `index/full_fmri_list` ordering and
+  all dependent offset files.
+
+Reproducibility mode now launches `pkgdepend`, `pkgsend`, and `pkgrepo` through
+shell wrappers which set `PYTHONHASHSEED=0` before Python starts and run a
+common fixed-datetime Python entry point.  All gate dependency generation,
+dependency resolution, repository creation, publication, and refresh calls use
+these wrappers.  Two repository creations separated by wall-clock time
+produced byte-identical trees with `created=20231226T164057Z`.
+
+The next full comparison exposed two narrower IPS ordering problems:
+
+* `pkgdepend resolve` produced one `developer/build/onbld` `require-any`
+  action with its two `fmri=` values in opposite orders.  The installed
+  `pkgdepend` shebang uses Python's `-E` flag, so an exported
+  `PYTHONHASHSEED` was ignored.  Invoking the script explicitly through the
+  wrapper fixed this; two parallel resolutions of all 544 copied dependency
+  manifests produced identical `developer-build-onbld.dep.res` files.
+* Once every package manifest matched, only `index/fmri_offsets.v1`,
+  `index/main_dict.ascii.v2`, and `index/manf_list.v1` differed.  IPS obtains
+  the packages requiring indexing as a set, then assigns numeric manifest IDs
+  in iteration order.  A fixed hash seed alone did not remove the influence of
+  catalog and filesystem insertion order.  The `pkgrepo` entry point now sorts
+  FMRIs by canonical string before the indexer assigns IDs.
+
+Rebuilding repositories from the preserved run-1 and run-2 package trees with
+the sorted-FMRI entry point produced byte-identical catalogs and indexes.  A
+final clean same-path comparison then passed end to end:
+
+```text
+work: /home/peter/ws/repo-redist-repro-sortedfmri-samepath-20260824T1050Z
+out:  /home/peter/ws/repo-redist-repro-sortedfmri-samepath-output-20260824T1050Z
+
+run1 archive sha256: 75ba2e7a591e955f1e948a68334abe71b83ab779b84a21b6349774e2c174d130
+run2 archive sha256: 75ba2e7a591e955f1e948a68334abe71b83ab779b84a21b6349774e2c174d130
+entries:             2629
+repo.redist:          all fingerprints match
+```
+
+The matching repository fingerprint covers 807 directories, 24,012 files,
+all content-addressed payloads, package manifests, parsed file actions,
+catalogs, and search indexes.
 
 The archive package set was unchanged and did not appear in the differing
 package manifest list:
@@ -400,9 +508,10 @@ package manifest list:
 * `system/library/c-runtime`
 * `system/library/security/gss`
 
-So, as of this run, the produced sysroot archive is reproducible under the
-same absolute build path, but the full `repo.redist` is not yet strictly
-reproducible.
+So, as of this run, both the produced sysroot archive and the complete
+`repo.redist` are byte-for-byte reproducible under the same absolute build path
+and package environment.  This does not yet prove reproducibility across
+different absolute paths, OmniOS package snapshots, or host environments.
 
 ## Remaining official release work
 

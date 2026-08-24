@@ -20,7 +20,8 @@ Options:
 By default, the script runs two clean build workdirs.  With -s, it runs both
 builds under WORKDIR/build, deleting that directory between runs.  Each
 resulting packages/i386/nightly-nd/repo.redist is fingerprinted, and diff
-output is written under OUTDIR.
+output is written under OUTDIR.  Package manifests and repository metadata
+from each run are preserved under OUTDIR/RUN for exact content comparison.
 EOF
 }
 
@@ -105,6 +106,19 @@ fingerprint_run() {
 
 	"$repo_root/scripts/fingerprint-repo-redist.sh" "$repo" \
 		"$outdir/$run/repo-redist-fingerprint"
+
+	pkg_capture=$outdir/$run/repo-redist-pkg
+	[ ! -e "$pkg_capture" ] ||
+		die "refusing to reuse package manifest capture: $pkg_capture"
+	cp -R "$repo/pkg" "$pkg_capture"
+
+	metadata_capture=$outdir/$run/repo-redist-metadata
+	[ ! -e "$metadata_capture" ] ||
+		die "refusing to reuse repository metadata capture: $metadata_capture"
+	mkdir -p "$metadata_capture"
+	for path in catalog index cfg_cache pkg5.repository; do
+		[ ! -e "$repo/$path" ] || cp -R "$repo/$path" "$metadata_capture/"
+	done
 }
 
 compare_file() {
