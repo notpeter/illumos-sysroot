@@ -151,8 +151,11 @@ prepare_env_file() {
 
 # Reproducible sysroot build settings from $0
 export SOURCE_DATE_EPOCH=$source_date_epoch
+export ILLUMOS_SYSROOT_GATE_DIR="$gate_dir"
 export ILLUMOS_SYSROOT_DTRACE_KEY=$source_date_epoch
 export ILLUMOS_SYSROOT_DTRACE_SUFFIX=$dtrace_suffix
+export PRIMARY_CC=gcc10,$repro_tools_dir/gcc,gnu
+export PRIMARY_CCC=gcc10,$repro_tools_dir/g++,gnu
 export DTRACE="$repro_tools_dir/dtrace -xnolibs"
 export PKG_PUBLICATION_TIMESTAMP=$pkg_publication_timestamp
 EOF
@@ -641,7 +644,20 @@ export PYTHONHASHSEED=0
 exec /usr/bin/python3.11 -s "$tool_dir/pkg-tool.py" "/usr/bin/$tool" "$@"
 EOF
 	done
+	for compiler in gcc g++; do
+		cat > "$repro_tools_dir/$compiler" <<'EOF'
+#!/bin/sh
+
+set -eu
+
+compiler=${0##*/}
+: "${ILLUMOS_SYSROOT_GATE_DIR:?}"
+exec "/opt/gcc-10/bin/$compiler" \
+	"-ffile-prefix-map=${ILLUMOS_SYSROOT_GATE_DIR}=." "$@"
+EOF
+	done
 	chmod +x "$repro_tools_dir/jar" "$repro_tools_dir/dtrace" \
+		"$repro_tools_dir/gcc" "$repro_tools_dir/g++" \
 		"$repro_tools_dir/pkgdepend" "$repro_tools_dir/pkgrepo" \
 		"$repro_tools_dir/pkgsend"
 }
@@ -789,6 +805,32 @@ apply_gate_repro_patches() {
 		    s/\Q$old\E/$new/ or die;
 		' "$gate_dir/usr/src/lib/pyzfs/Makefile"
 	fi
+
+	for makefile in \
+		"$gate_dir/usr/src/lib/pyzfs/py3/Makefile" \
+		"$gate_dir/usr/src/lib/pysolaris/py3/Makefile"; do
+		if grep -Fq '$(PYTHON3) -mpy_compile $@' "$makefile"; then
+			perl -0pi -e '
+			    s{\$\(PYTHON3\) -mpy_compile \$@}
+			      {\$(PYTHON3) -m compileall -q -f -s \$(ROOT) \$@} or die;
+			' "$makefile"
+		fi
+		grep -Fq '$(PYTHON3) -m compileall -q -f -s $(ROOT) $@' \
+			"$makefile" || die "patching Python 3 bytecode rule in $makefile"
+	done
+
+	for makefile in \
+		"$gate_dir/usr/src/lib/pyzfs/py3b/Makefile" \
+		"$gate_dir/usr/src/lib/pysolaris/py3b/Makefile"; do
+		if grep -Fq '$(PYTHON3b) -mpy_compile $@' "$makefile"; then
+			perl -0pi -e '
+			    s{\$\(PYTHON3b\) -mpy_compile \$@}
+			      {\$(PYTHON3b) -m compileall -q -f -s \$(ROOT) \$@} or die;
+			' "$makefile"
+		fi
+		grep -Fq '$(PYTHON3b) -m compileall -q -f -s $(ROOT) $@' \
+			"$makefile" || die "patching Python 3b bytecode rule in $makefile"
+	done
 
 	if ! grep -Fq "$repro_tools_dir/pkgrepo" "$gate_dir/usr/src/pkg/Makefile"; then
 		REPRO_PKGREPO=$repro_tools_dir/pkgrepo perl -0pi -e '

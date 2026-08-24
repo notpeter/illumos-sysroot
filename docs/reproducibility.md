@@ -508,10 +508,55 @@ package manifest list:
 * `system/library/c-runtime`
 * `system/library/security/gss`
 
-So, as of this run, both the produced sysroot archive and the complete
-`repo.redist` are byte-for-byte reproducible under the same absolute build path
-and package environment.  This does not yet prove reproducibility across
-different absolute paths, OmniOS package snapshots, or host environments.
+### Different-path result
+
+The first follow-up using different absolute work directories found that GCC
+embedded the gate checkout path in 27 ELF payloads. After compiler path
+remapping removed those differences, another clean run produced identical
+sysroot archives but found ten remaining Python 3.11 bytecode differences in
+the complete `repo.redist`. Python's `py_compile` had embedded each run's
+proto-root path.
+
+Reproducibility mode now selects generated GCC and G++ wrappers through
+`PRIMARY_CC` and `PRIMARY_CCC`. The wrappers pass:
+
+```text
+-ffile-prefix-map=$ILLUMOS_SYSROOT_GATE_DIR=.
+```
+
+The pyzfs and pysolaris bytecode rules now use `compileall -s $(ROOT)` so their
+stored source filenames are relative to the proto root. A focused two-path
+test produced identical bytecode with this stored filename:
+
+```text
+usr/lib/python3.11/vendor-packages/zfs/allow.py
+```
+
+The final clean comparison used two different absolute work directories and
+passed end to end:
+
+```text
+work: /home/peter/ws/repo-redist-repro-strict-20260824T175609Z
+out:  /home/peter/ws/repo-redist-repro-strict-output-20260824T175609Z
+
+archive sha256:           4181ef9e071ceee12a62b99d784b7d9f7e6fd52f8732eb496c91f4f6c5535b54
+entries:                  2629
+all-files-sha256:         2157fd4a14a230eb989cd7ec37e2d412fc1ae1c05e83a3f4a6765604444e4022
+file-payloads-sha256:     b39067ddc2b26565359aa4afef0de0cda616818e1b79e573536b2759e28dab34
+pkg-manifests-sha256:     d6a3e25a6485e1277b40a72887832dee3679f42fc254f68b345c915eddc2e3fc
+payload-actions-sha256:   d73c7a4160ee0d9c258d9305d49ab52d05d816b72d79d173e1f0cfca85124a6f
+repo.redist directories:  807
+repo.redist files:        24012
+```
+
+Both runs produced every hash above, and the comparison directory contained
+no mismatch files. This proves byte-for-byte reproducibility across different
+absolute build paths on the same OmniOS r151046 VM and package environment.
+
+So, as of the final different-path run, both the produced sysroot archive and
+the complete `repo.redist` are byte-for-byte reproducible across clean absolute
+build paths in the same OmniOS package and host environment. This does not yet
+prove reproducibility across OmniOS package snapshots or host environments.
 
 ## Remaining official release work
 
