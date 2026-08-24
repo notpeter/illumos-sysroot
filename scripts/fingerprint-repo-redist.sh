@@ -37,6 +37,29 @@ write_file_hashes() {
 	done > "$output"
 }
 
+write_payload_actions() {
+	output=$1
+
+	find ./pkg -type f | LC_ALL=C sort | while IFS= read -r manifest; do
+		rel=${manifest#./}
+		awk -v manifest="$rel" '
+			$1 == "file" {
+				payload=$2
+				path=""
+				for (i = 3; i <= NF; i++) {
+					if ($i ~ /^path=/) {
+						path=substr($i, 6)
+						break
+					}
+				}
+				if (path != "") {
+					printf "%s\t%s\t%s\t%s\n", path, manifest, payload, $0
+				}
+			}
+		' "$manifest"
+	done | LC_ALL=C sort > "$output"
+}
+
 if [ "$#" -ne 2 ]; then
 	usage
 	exit 2
@@ -63,6 +86,7 @@ outdir=$(CDPATH= cd -- "$outdir" && pwd)
 	write_file_hashes . "$outdir/files.sha256"
 	write_file_hashes ./file "$outdir/file-payloads.sha256"
 	write_file_hashes ./pkg "$outdir/pkg-manifests.sha256"
+	write_payload_actions "$outdir/payload-actions.tsv"
 
 	{
 		printf 'repo=%s\n' "$repo"
@@ -75,6 +99,8 @@ outdir=$(CDPATH= cd -- "$outdir" && pwd)
 			"$(sha256_file "$outdir/file-payloads.sha256")"
 		printf 'pkg-manifests-sha256=%s\n' \
 			"$(sha256_file "$outdir/pkg-manifests.sha256")"
+		printf 'payload-actions-sha256=%s\n' \
+			"$(sha256_file "$outdir/payload-actions.tsv")"
 	} > "$outdir/summary.txt"
 )
 

@@ -203,6 +203,7 @@ The comparison writes:
 * `files.sha256`
 * `file-payloads.sha256`
 * `pkg-manifests.sha256`
+* `payload-actions.tsv`
 * one `.diff` file per mismatch
 
 On 2026-08-23, two clean builds in different absolute work directories on the
@@ -314,6 +315,81 @@ package set:
 * `service/network/slp`
 * `service/resource-pools/poold`
 * `system/dtrace/tests`
+
+Follow-up payload action mapping narrowed the remaining content differences to
+these classes:
+
+* Java archives:
+  * `usr/share/lib/slp/slpd.jar`
+  * `usr/share/lib/slp/slp.jar`
+  * `usr/share/lib/java/dtrace.jar`
+  * `usr/lib/pool/JPool.jar`
+  * `opt/SUNWdtrt/tst/common/java_api/test.jar`
+  * `opt/SUNWdtrt/lib/java/jdtrace.jar`
+  * `usr/lib/audit/Audit.jar`
+* SMF seed repositories:
+  * `lib/svc/seed/global.db`
+  * `lib/svc/seed/nonglobal.db`
+  * `usr/sadm/install/miniroot.db`
+* Generated message file:
+  * `usr/lib/locale/C/LC_MESSAGES/SUNW_OST_OSLIB.po`
+* DTrace ustack test executables:
+  * `opt/SUNWdtrt/tst/i386/ustack/tst.helper.exe`
+  * `opt/SUNWdtrt/tst/i386/ustack/tst.annotated.exe`
+
+The Java archive differences were confirmed to include build wall-clock ZIP
+entry timestamps.  The OmniOS r151046 JDK `jar` does not support a `--date`
+option, so `scripts/build-omnios-sysroot.sh` now creates a reproducible `jar`
+wrapper when `SOURCE_DATE_EPOCH` is set and patches `usr/src/Makefile.master`
+to use it.  The wrapper runs the real JDK `jar`, extracts the resulting
+archive, sets all entry mtimes to `SOURCE_DATE_EPOCH`, and repacks with
+`zip -X` in deterministic order.  It was smoke-tested on OmniOS for the legacy
+`cf`, `cmf`, and `cfm` option forms used by illumos-gate and produced
+byte-identical output across repeated runs.
+
+A full same-path run with the `jar` wrapper initially exposed a wrapper bug:
+the normalized archive was written under `/tmp`, and replacing a workspace JAR
+could fail with `Cross-device link`.  The wrapper now creates its temporary
+directory next to the target JAR before replacing it.
+
+A follow-up same-path run with the fixed `jar` wrapper completed both gate
+builds and produced byte-identical sysroot archives:
+
+```text
+work: /home/peter/ws/repo-redist-repro-jarwrap2-samepath-20260824T025128Z
+out:  /home/peter/ws/repo-redist-repro-jarwrap2-samepath-output-20260824T025128Z
+
+run1 archive sha256: 355223e8838ae8d26ba859f13066076b7a823b9dfde5132e47a56ded233a9310
+run2 archive sha256: 355223e8838ae8d26ba859f13066076b7a823b9dfde5132e47a56ded233a9310
+entries:             2629
+```
+
+The full `repo.redist` still differed.  Compared with the previous run, the
+`jar` wrapper removed the `developer/dtrace`, `library/libadt_jni`,
+`service/resource-pools/poold`, and most `system/dtrace/tests` Java archive
+payload differences.  Remaining payload differences were:
+
+* `lib/svc/seed/global.db`
+* `lib/svc/seed/nonglobal.db`
+* `usr/sadm/install/miniroot.db`
+* `usr/lib/locale/C/LC_MESSAGES/SUNW_OST_OSLIB.po`
+* `opt/SUNWdtrt/tst/i386/ustack/tst.helper.exe`
+* `opt/SUNWdtrt/tst/i386/ustack/tst.annotated.exe`
+* `usr/share/lib/slp/slp.jar`
+* `usr/share/lib/slp/slpd.jar`
+
+The remaining SLP JAR differences were traced to manifest content, not ZIP
+entry metadata:
+
+```text
+Implementation-Version: [Mon Aug 24 03:45:16 UTC 2026]
+```
+
+The wrapper now also normalizes bracketed `Implementation-Version` timestamp
+values to the `SOURCE_DATE_EPOCH` date string.  This was validated with a
+targeted OmniOS wrapper test that produced byte-identical JARs from manifests
+with different wall-clock `Implementation-Version` values, but a full gate
+rerun has not yet been done with this additional manifest normalization.
 
 The archive package set was unchanged and did not appear in the differing
 package manifest list:

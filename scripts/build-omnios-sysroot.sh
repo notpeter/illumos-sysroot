@@ -109,6 +109,12 @@ check_tools() {
 	for tool in git gmake gzip tar awk sed; do
 		command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
 	done
+	if [ -n "$source_date_epoch" ]; then
+		for tool in perl zip; do
+			command -v "$tool" >/dev/null 2>&1 ||
+				die "missing required reproducibility tool: $tool"
+		done
+	fi
 	[ -x /opt/onbld/bin/nightly ] || die "missing /opt/onbld/bin/nightly"
 	[ -x /opt/gcc-10/bin/gcc ] || die "missing /opt/gcc-10/bin/gcc"
 	if ! command -v cargo >/dev/null 2>&1; then
@@ -163,6 +169,165 @@ prepare_repro_tools() {
 
 	repro_tools_dir=$workdir/repro-tools
 	mkdir -p "$repro_tools_dir"
+	cat > "$repro_tools_dir/jar" <<'EOF'
+#!/usr/bin/perl
+#
+# Run the JDK jar tool, then normalize created or updated archives.
+
+use strict;
+use warnings;
+use Cwd qw(getcwd);
+use File::Find;
+use File::Path qw(make_path);
+use File::Spec;
+use File::Temp qw(tempdir);
+
+my $real_jar = $ENV{ILLUMOS_SYSROOT_REAL_JAR} || "/usr/bin/jar";
+my $epoch = $ENV{SOURCE_DATE_EPOCH};
+
+sub old_style_options {
+	my ($arg) = @_;
+	$arg =~ s/^-//;
+	return undef if $arg =~ /^-/;
+	return undef unless $arg =~ /[ctxuid]/;
+	return undef unless $arg =~ /^[A-Za-z0-9]+$/;
+	return $arg;
+}
+
+sub archive_arg {
+	my (@args) = @_;
+
+	for (my $i = 0; $i < @args; $i++) {
+		my $arg = $args[$i];
+		return $args[$i + 1] if ($arg eq "-f" || $arg eq "--file");
+		return $1 if ($arg =~ /^--file=(.*)$/);
+
+		my $opts = old_style_options($arg);
+		next unless defined($opts) && $opts =~ /f/;
+
+		my $operand = $i + 1;
+		for my $ch (split //, $opts) {
+			if ($ch eq "f") {
+				return $args[$operand];
+			}
+			if ($ch eq "m" || $ch eq "e") {
+				$operand++;
+			}
+		}
+	}
+
+	return undef;
+}
+
+sub changes_archive {
+	my (@args) = @_;
+
+	for my $arg (@args) {
+		return 1 if ($arg eq "-c" || $arg eq "--create");
+		return 1 if ($arg eq "-u" || $arg eq "--update");
+		my $opts = old_style_options($arg);
+		return 1 if defined($opts) && $opts =~ /[cu]/;
+	}
+
+	return 0;
+}
+
+sub epoch_date_string {
+	my @wday = qw(Sun Mon Tue Wed Thu Fri Sat);
+	my @mon = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+	my @t = gmtime($epoch);
+	return sprintf("%s %s %2d %02d:%02d:%02d UTC %04d",
+	    $wday[$t[6]], $mon[$t[4]], $t[3], $t[2], $t[1], $t[0],
+	    $t[5] + 1900);
+}
+
+sub normalize_manifest {
+	my ($root) = @_;
+	my $manifest = File::Spec->catfile($root, "META-INF", "MANIFEST.MF");
+	return unless -f $manifest;
+
+	open(my $in, "<", $manifest) or die "open $manifest: $!\n";
+	binmode($in);
+	local $/;
+	my $text = <$in>;
+	close($in) or die "close $manifest: $!\n";
+
+	my $repro_date = epoch_date_string();
+	$text =~ s{(^Implementation-Version: \[)[^\]\r\n]*(\]\r?$)}
+	    {$1$repro_date$2}mg;
+
+	open(my $out, ">", $manifest) or die "open $manifest: $!\n";
+	binmode($out);
+	print $out $text;
+	close($out) or die "close $manifest: $!\n";
+}
+
+sub normalize_jar {
+	my ($jar) = @_;
+	die "SOURCE_DATE_EPOCH must be numeric\n"
+	    unless defined($epoch) && $epoch =~ /^[0-9]+$/;
+
+	my $cwd = getcwd();
+	my $jar_abs = File::Spec->rel2abs($jar, $cwd);
+	return unless -f $jar_abs;
+
+	my ($volume, $directories) = File::Spec->splitpath($jar_abs);
+	my $jar_dir = File::Spec->catpath($volume, $directories, "");
+	my $tmp = tempdir(".illumos-sysroot-jar.XXXXXX",
+	    DIR => $jar_dir, CLEANUP => 1);
+	my $root = File::Spec->catdir($tmp, "root");
+	make_path($root);
+
+	chdir($root) or die "chdir $root: $!\n";
+	system($real_jar, "xf", $jar_abs) == 0
+	    or die "extracting $jar_abs failed\n";
+
+	normalize_manifest($root);
+
+	my @entries;
+	find({
+	    no_chdir => 1,
+	    wanted => sub {
+		return if $_ eq ".";
+		my $rel = $_;
+		$rel =~ s{^\./}{};
+		utime($epoch, $epoch, $_)
+		    or die "utime $rel: $!\n";
+		$rel .= "/" if -d $_ && $rel !~ m{/$};
+		push @entries, $rel;
+	    },
+	}, ".");
+
+	my %seen = map { $_ => 1 } @entries;
+	my @ordered;
+	for my $first ("META-INF/", "META-INF/MANIFEST.MF") {
+		if (delete $seen{$first}) {
+			push @ordered, $first;
+		}
+	}
+	push @ordered, sort keys %seen;
+	die "refusing to write empty jar: $jar_abs\n" unless @ordered;
+
+	my $tmpjar = File::Spec->catfile($tmp, "out.jar");
+	open(my $zip, "|-", "/usr/bin/zip", "-X", "-q", $tmpjar, "-@")
+	    or die "starting zip: $!\n";
+	print $zip "$_\n" for @ordered;
+	close($zip) or die "zip failed\n";
+
+	chdir($cwd) or die "chdir $cwd: $!\n";
+	rename($tmpjar, $jar_abs) or die "rename $tmpjar $jar_abs: $!\n";
+}
+
+my $jar = archive_arg(@ARGV);
+my $must_normalize = defined($jar) && changes_archive(@ARGV);
+
+system($real_jar, @ARGV);
+my $status = $?;
+exit($status >> 8) if $status != 0;
+
+normalize_jar($jar) if $must_normalize;
+exit 0;
+EOF
 	cat > "$repro_tools_dir/dtrace" <<'EOF'
 #!/bin/sh
 #
@@ -251,7 +416,7 @@ if $is_generate && [ -n "${ILLUMOS_SYSROOT_DTRACE_SUFFIX:-}" ]; then
 	fi
 fi
 EOF
-	chmod +x "$repro_tools_dir/dtrace"
+	chmod +x "$repro_tools_dir/jar" "$repro_tools_dir/dtrace"
 }
 
 apply_gate_repro_patches() {
@@ -294,6 +459,15 @@ apply_gate_repro_patches() {
 		    my $insert = "\nAR =\t\t/usr/bin/gar\nARFLAGS =\tcrD\n";
 		    s/\Q$needle\E/$needle$insert/ or die;
 		' "$gate_dir/usr/src/lib/ssp_ns/Makefile.com"
+	fi
+
+	repro_tools_dir=$workdir/repro-tools
+	if ! grep -Fq "$repro_tools_dir/jar" "$gate_dir/usr/src/Makefile.master"; then
+		REPRO_JAR=$repro_tools_dir/jar perl -0pi -e '
+		    my $needle = "JAR=\t\t\$(JAVA_ROOT)/bin/jar\n";
+		    my $replace = "JAR=\t\t$ENV{REPRO_JAR}\n";
+		    s/\Q$needle\E/$replace/ or die;
+		' "$gate_dir/usr/src/Makefile.master"
 	fi
 }
 
