@@ -4,7 +4,7 @@ The release goal is stronger than deterministic tar creation: the selected
 illumos source, complete gate output repository, sysroot payload, shims, and
 archive envelope must all be reproducible from recorded public inputs.
 
-[`new-plan.md`](new-plan.md) defines the required releases and acceptance
+[`plan.md`](plan.md) defines the required releases and acceptance
 tests. This document describes the mechanisms already implemented, the proof
 obtained so far, and the remaining boundary between development evidence and a
 repeatable release process.
@@ -58,7 +58,7 @@ printed `illumos-sysroot-ok`.
 This proves that the 20231226 implementation can reproduce from the preserved
 development input set. It is not yet the final release contract: the
 per-release `toolchain.<DATE>.lock` files and closed-bins digests described in
-`new-plan.md` are not checked in, and the older profiles have not passed the
+`plan.md` are not checked in, and the older profiles have not passed the
 same matrix.
 
 ## Normalization implemented for 20231226
@@ -203,8 +203,7 @@ canonical identity if the deterministic result is intentionally different.
   the current profile causes the build script to check out the base without
   its six required build commits.
 - Generalize the 20231226 reproducibility layer to the gcc7-era profiles.
-- Reconcile the 20210501 env file's JDK 11 setting with the Java-8 entry in
-  `new-plan.md` before creating its toolchain lock.
+- Use the 20210501 env file's JDK 11 setting when creating its toolchain lock.
 - Replace live OmniOS publisher resolution with the per-release durable locks.
 - Record and verify stock closed-bins instead of relying on a host copy.
 - Separate the gate-only toolchain from the Rust-based archive assembler.

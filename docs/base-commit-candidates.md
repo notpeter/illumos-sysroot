@@ -1,7 +1,7 @@
 # Release base provenance
 
 The current work does not need to select another gate commit. The three
-profiles and their release identities are fixed in [`new-plan.md`](new-plan.md):
+profiles and their release identities are fixed in [`plan.md`](plan.md):
 
 | Profile | Vanilla gate base | Build branch or commit | Why it is in scope |
 | --- | --- | --- | --- |
