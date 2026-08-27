@@ -25,6 +25,8 @@ Environment:
   SOURCE_DATE_EPOCH reproducible build timestamp; defaults from profiles/$RELEASE.mk
   ILLUMOS_SYSROOT_PREPARE_ONLY
                      stop after preparing and patching the gate (default: unset)
+  ILLUMOS_SYSROOT_GATE_ONLY
+                     stop after building and validating repo.redist (default: unset)
 EOF
 }
 
@@ -119,7 +121,8 @@ check_tools() {
 	fi
 	[ -x /opt/onbld/bin/nightly ] || die "missing /opt/onbld/bin/nightly"
 	[ -x /opt/gcc-10/bin/gcc ] || die "missing /opt/gcc-10/bin/gcc"
-	if ! command -v cargo >/dev/null 2>&1; then
+	if [ "${ILLUMOS_SYSROOT_GATE_ONLY:-}" != 1 ] &&
+		! command -v cargo >/dev/null 2>&1; then
 		[ -x /opt/ooce/bin/cargo ] || die "missing cargo"
 	fi
 }
@@ -128,7 +131,12 @@ checkout_gate() {
 	mkdir -p "$workdir"
 	if [ ! -d "$gate_dir/.git" ]; then
 		git init "$gate_dir"
-		git -C "$gate_dir" remote add origin "$gate_repo"
+	fi
+	if [ -f "$gate_repo" ]; then
+		git -C "$gate_dir" bundle unbundle "$gate_repo" >/dev/null
+		git -C "$gate_dir" cat-file -e "$gate_commit^{commit}"
+		git -C "$gate_dir" checkout -B "$gate_branch" "$gate_commit"
+		return
 	fi
 	if ! git -C "$gate_dir" remote get-url origin >/dev/null 2>&1; then
 		git -C "$gate_dir" remote add origin "$gate_repo"
@@ -152,7 +160,7 @@ prepare_env_file() {
 # Reproducible sysroot build settings from $0
 export SOURCE_DATE_EPOCH=$source_date_epoch
 export ILLUMOS_SYSROOT_GATE_DIR="$gate_dir"
-export ILLUMOS_SYSROOT_DTRACE_KEY=$source_date_epoch
+export ILLUMOS_SYSROOT_DTRACE_KEY=$dtrace_suffix
 export ILLUMOS_SYSROOT_DTRACE_SUFFIX=$dtrace_suffix
 export PRIMARY_CC=gcc10,$repro_tools_dir/gcc,gnu
 export PRIMARY_CCC=gcc10,$repro_tools_dir/g++,gnu
@@ -341,6 +349,7 @@ EOF
 set -u
 
 real_dtrace=${ILLUMOS_SYSROOT_REAL_DTRACE:-/usr/sbin/dtrace}
+ftok_preload=${ILLUMOS_SYSROOT_DTRACE_FTOK_PRELOAD:-$(dirname "$0")/dtrace-ftok.so}
 is_generate=false
 out=
 script=
@@ -384,7 +393,7 @@ do
 done
 
 set +e
-"$real_dtrace" "$@"
+LD_PRELOAD_64="$ftok_preload" "$real_dtrace" "$@"
 status=$?
 set -e
 [ "$status" -eq 0 ] || exit "$status"
@@ -454,13 +463,26 @@ sub normalize_dof {
 
 		for my $i (0 .. $secnum - 1) {
 			my $section = $base + $secoff + $i * $secsize;
-			next unless u32le($$dataref, $section) == 5;
-			my $entsize = u32le($$dataref, $section + 12);
+			my $type = u32le($$dataref, $section);
 			my $offset = u64le_small($$dataref, $section + 16);
 			my $size = u64le_small($$dataref, $section + 24);
 			next unless defined($offset) && defined($size);
-			next unless $entsize >= 32 && $size % $entsize == 0;
 			next if $offset + $size > $filesz;
+
+			if ($type == 20 && $size >= 257 * 5) {
+				my $fixed = "illumos-sysroot";
+				my $nodename = $fixed . "\0" x (257 - length($fixed));
+				my $field = $base + $offset + 257;
+				if (substr($$dataref, $field, 257) ne $nodename) {
+					substr($$dataref, $field, 257) = $nodename;
+					$changed = 1;
+				}
+				next;
+			}
+
+			next unless $type == 5;
+			my $entsize = u32le($$dataref, $section + 12);
+			next unless $entsize >= 32 && $size % $entsize == 0;
 
 			for (my $action = 0; $action < $size; $action += $entsize) {
 				my $uarg = $base + $offset + $action + 24;
@@ -498,6 +520,23 @@ PERL
 	fi
 fi
 EOF
+	cat > "$repro_tools_dir/dtrace-ftok.c" <<'EOF'
+#include <stdlib.h>
+#include <sys/types.h>
+
+key_t
+ftok(const char *path, int id)
+{
+	const char *key = getenv("ILLUMOS_SYSROOT_DTRACE_KEY");
+
+	(void) path;
+	(void) id;
+	return ((key_t)strtol(key, NULL, 10));
+}
+EOF
+	/opt/gcc-10/bin/gcc -m64 -fPIC -shared \
+		-o "$repro_tools_dir/dtrace-ftok.so" \
+		"$repro_tools_dir/dtrace-ftok.c"
 	cat > "$repro_tools_dir/sqlite2-normalize.c" <<'EOF'
 #include <errno.h>
 #include <fcntl.h>
@@ -959,5 +998,8 @@ if [ "${ILLUMOS_SYSROOT_PREPARE_ONLY:-}" = 1 ]; then
 fi
 run_nightly
 check_nightly_summary
+if [ "${ILLUMOS_SYSROOT_GATE_ONLY:-}" = 1 ]; then
+	exit 0
+fi
 build_archive
 verify_archive

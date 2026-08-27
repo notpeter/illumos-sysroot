@@ -170,7 +170,6 @@ run_as_root rm -rf "$scratch"
 verify_archives "$verify" "$outdir/omnios-r151046-core.p5p" \
 	"$outdir/omnios-r151046-extra.p5p"
 
-append_sha256 "$outdir/host-installed.fmris"
 append_sha256 "$outdir/host-publishers.txt"
 append_sha256 "$outdir/scratch-publishers.txt"
 append_sha256 "$outdir/requested-packages.txt"
