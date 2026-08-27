@@ -177,8 +177,8 @@ failed=false
 if ! compare_archive; then
 	failed=true
 fi
-for name in paths.all paths.files files.sha256 file-payloads.sha256 \
-	pkg-manifests.sha256 payload-actions.tsv; do
+for name in paths.all paths.dirs paths.files paths.links files.sha256 \
+	file-payloads.sha256 pkg-manifests.sha256 payload-actions.tsv; do
 	if ! compare_file "$name"; then
 		failed=true
 	fi

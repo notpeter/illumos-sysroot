@@ -1,2 +1,4 @@
 /output/
 /mf2tar/target/
+/.build-inputs/
+/.build-output/

@@ -4,6 +4,11 @@
 
 set -eu
 
+awk_cmd=awk
+if command -v nawk >/dev/null 2>&1; then
+	awk_cmd=nawk
+fi
+
 usage() {
 	cat >&2 <<'EOF'
 usage: scripts/fingerprint-repo-redist.sh REPO_REDIST OUTDIR
@@ -22,19 +27,31 @@ sha256_file() {
 	if command -v digest >/dev/null 2>&1; then
 		digest -a sha256 "$1"
 	else
-		sha256sum "$1" | awk '{ print $1 }'
+		sha256sum "$1" | "$awk_cmd" '{ print $1 }'
 	fi
 }
 
 write_file_hashes() {
 	prefix=$1
 	output=$2
+	paths=$output.paths.$$
 
-	find "$prefix" -type f | LC_ALL=C sort | while IFS= read -r path; do
-		rel=${path#./}
-		sha=$(sha256_file "$rel")
-		printf '%s  %s\n' "$sha" "$rel"
-	done > "$output"
+	# IPS repository paths are generated hash/manifests paths and contain no
+	# whitespace.  Batch them to avoid starting digest once per payload file.
+	find "$prefix" -type f | LC_ALL=C sort | sed 's,^\./,,' > "$paths"
+	if command -v digest >/dev/null 2>&1; then
+		xargs -n 128 digest -a sha256 < "$paths" | "$awk_cmd" '
+			/^\(.*\) = [0-9a-f]+$/ {
+				path=$1
+				sub(/^\(/, "", path)
+				sub(/\)$/, "", path)
+				print $3 "  " path
+			}
+		' > "$output"
+	else
+		xargs -n 128 sha256sum < "$paths" > "$output"
+	fi
+	rm -f "$paths"
 }
 
 write_payload_actions() {
@@ -42,7 +59,7 @@ write_payload_actions() {
 
 	find ./pkg -type f | LC_ALL=C sort | while IFS= read -r manifest; do
 		rel=${manifest#./}
-		awk -v manifest="$rel" '
+		"$awk_cmd" -v manifest="$rel" '
 			$1 == "file" {
 				payload=$2
 				path=""

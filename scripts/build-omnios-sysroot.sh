@@ -5,6 +5,13 @@
 # vmactions/omnios-vm.
 
 set -eu
+export LC_ALL=C
+export LANG=C
+
+awk_cmd=awk
+if command -v nawk >/dev/null 2>&1; then
+	awk_cmd=nawk
+fi
 
 usage() {
 	cat >&2 <<'EOF'
@@ -20,9 +27,22 @@ Options:
 
 Environment:
   GATE_REPO         illumos-gate remote (default: https://github.com/illumos/illumos-gate)
-  GATE_COMMIT       illumos-gate commit; defaults from profiles/$RELEASE.mk
-  GATE_BRANCH       local branch name (default: sysroot/$RELEASE)
+  GATE_BUILD_COMMIT illumos-gate build head; defaults from profiles/$RELEASE.mk
+  GATE_BRANCH       local checkout branch name (default: sysroot/$RELEASE)
+  GATE_CC           override the profile C compiler path
+  GATE_CXX          override the profile C++ compiler path
+  CLOSED_BINS_CACHE directory for verified closed-bins downloads
+                     (default: $WORKDIR/inputs)
+  TMPDIR             nightly temporary directory
+                     (default: $WORKDIR/tmp)
+  OMNIOS_TOOLCHAIN_DIR
+                     verified per-profile toolchain archive directory
+  ILLUMOS_SYSROOT_REQUIRE_LOCKED_TOOLCHAIN
+                     fail unless OMNIOS_TOOLCHAIN_DIR is set (default: unset)
   SOURCE_DATE_EPOCH reproducible build timestamp; defaults from profiles/$RELEASE.mk
+  ILLUMOS_SYSROOT_ALLOW_BUILDER_MISMATCH
+                     allow source-preparation diagnostics on another OmniOS release
+                     (default: unset)
   ILLUMOS_SYSROOT_PREPARE_ONLY
                      stop after preparing and patching the gate (default: unset)
   ILLUMOS_SYSROOT_GATE_ONLY
@@ -68,15 +88,86 @@ env_file=$repo_root/env/illumos.$release.sh
 [ -f "$profile" ] || die "unknown release profile: $release"
 [ -f "$env_file" ] || die "missing nightly env file: $env_file"
 
+profile_value() {
+	key=$1
+	"$awk_cmd" -v key="$key" '
+		$1 == key {
+			value=$0
+			equals=index(value, "=")
+			if (equals == 0)
+				exit
+			value=substr(value, equals + 1)
+			tab=sprintf("%c", 9)
+			while (substr(value, 1, 1) == " " ||
+			    substr(value, 1, 1) == tab)
+				value=substr(value, 2)
+			print value
+			exit
+		}
+	' "$profile"
+}
+
 workdir=${workdir:-$repo_root/.sysroot-omnios}
 gate_dir=${gate_dir:-$workdir/illumos-gate}
 output=${output:-$repo_root/output}
 gate_repo=${GATE_REPO:-https://github.com/illumos/illumos-gate}
-gate_commit=${GATE_COMMIT:-$(awk '$1 == "GATE_COMMIT" { print $3; exit }' "$profile")}
+release_base_commit=$(profile_value RELEASE_BASE_COMMIT)
+profile_build_commit=$(profile_value BUILD_HEAD_COMMIT)
+gate_commit=${GATE_BUILD_COMMIT:-${GATE_COMMIT:-$profile_build_commit}}
+build_head_ref=$(profile_value BUILD_HEAD_REF)
+build_history_depth=$(profile_value BUILD_HISTORY_DEPTH)
+gate_version=$(profile_value GATE_VERSION)
 gate_branch=${GATE_BRANCH:-sysroot/$release}
-source_date_epoch=${SOURCE_DATE_EPOCH:-$(awk '$1 == "SOURCE_DATE_EPOCH" { print $3; exit }' "$profile")}
+builder_release=$(profile_value BUILDER_RELEASE)
+gate_compiler_name=$(profile_value GATE_COMPILER_NAME)
+gate_cc=${GATE_CC:-$(profile_value GATE_CC)}
+gate_cxx=${GATE_CXX:-$(profile_value GATE_CXX)}
+gate_lint_mode=$(profile_value GATE_LINT_MODE)
+gate_compiler_root=$(dirname "$(dirname "$gate_cc")")
+gate_prefix_map_flag=$(profile_value GATE_PREFIX_MAP_FLAG)
+gate_compiler_package=$(profile_value GATE_COMPILER_PACKAGE)
+gate_jdk_package=$(profile_value GATE_JDK_PACKAGE)
+gate_java_root=$(profile_value GATE_JAVA_ROOT)
+mf2tar_rust_toolchain=$(profile_value MF2TAR_RUST_TOOLCHAIN)
+mf2tar_cargo_lock_sha256=$(profile_value MF2TAR_CARGO_LOCK_SHA256)
+closed_bins_base_url=$(profile_value CLOSED_BINS_BASE_URL)
+closed_bins_archive=$(profile_value CLOSED_BINS_ARCHIVE)
+closed_bins_sha256=$(profile_value CLOSED_BINS_SHA256)
+closed_bins_nd_archive=$(profile_value CLOSED_BINS_ND_ARCHIVE)
+closed_bins_nd_sha256=$(profile_value CLOSED_BINS_ND_SHA256)
+closed_bins_cache=${CLOSED_BINS_CACHE:-$workdir/inputs}
+source_date_epoch=${SOURCE_DATE_EPOCH:-$(profile_value SOURCE_DATE_EPOCH)}
+TMPDIR=${TMPDIR:-$workdir/tmp}
+export TMPDIR
 
-[ -n "$gate_commit" ] || die "could not determine GATE_COMMIT from $profile"
+[ -n "$release_base_commit" ] || die "missing RELEASE_BASE_COMMIT in $profile"
+[ -n "$gate_commit" ] || die "missing BUILD_HEAD_COMMIT in $profile"
+[ -n "$build_head_ref" ] || die "missing BUILD_HEAD_REF in $profile"
+[ -n "$build_history_depth" ] || die "missing BUILD_HISTORY_DEPTH in $profile"
+[ -n "$gate_version" ] || die "missing GATE_VERSION in $profile"
+expected_gate_version=$(printf 'sysroot/%s-0-g%.12s' \
+	"$release" "$profile_build_commit")
+[ "$gate_version" = "$expected_gate_version" ] ||
+	die "GATE_VERSION mismatch: expected $expected_gate_version, found $gate_version"
+[ -n "$builder_release" ] || die "missing BUILDER_RELEASE in $profile"
+[ -n "$gate_compiler_name" ] || die "missing GATE_COMPILER_NAME in $profile"
+[ -n "$gate_cc" ] || die "missing GATE_CC in $profile"
+[ -n "$gate_cxx" ] || die "missing GATE_CXX in $profile"
+[ "$gate_lint_mode" = reproducible-stub ] ||
+	die "unsupported GATE_LINT_MODE in $profile: $gate_lint_mode"
+[ -n "$gate_prefix_map_flag" ] || die "missing GATE_PREFIX_MAP_FLAG in $profile"
+[ -n "$gate_compiler_package" ] || die "missing GATE_COMPILER_PACKAGE in $profile"
+[ -n "$gate_jdk_package" ] || die "missing GATE_JDK_PACKAGE in $profile"
+[ -n "$gate_java_root" ] || die "missing GATE_JAVA_ROOT in $profile"
+[ -n "$mf2tar_rust_toolchain" ] || die "missing MF2TAR_RUST_TOOLCHAIN in $profile"
+[ -n "$mf2tar_cargo_lock_sha256" ] ||
+	die "missing MF2TAR_CARGO_LOCK_SHA256 in $profile"
+[ -n "$closed_bins_base_url" ] || die "missing CLOSED_BINS_BASE_URL in $profile"
+[ -n "$closed_bins_archive" ] || die "missing CLOSED_BINS_ARCHIVE in $profile"
+[ -n "$closed_bins_sha256" ] || die "missing CLOSED_BINS_SHA256 in $profile"
+[ -n "$closed_bins_nd_archive" ] || die "missing CLOSED_BINS_ND_ARCHIVE in $profile"
+[ -n "$closed_bins_nd_sha256" ] || die "missing CLOSED_BINS_ND_SHA256 in $profile"
+mkdir -p "$TMPDIR"
 
 if [ -n "$source_date_epoch" ]; then
 	case "$source_date_epoch" in
@@ -96,23 +187,37 @@ run_as_root() {
 	fi
 }
 
+check_builder_release() {
+	case "$(uname -v)" in
+	*"$builder_release"*) ;;
+	*)
+		if [ "${ILLUMOS_SYSROOT_ALLOW_BUILDER_MISMATCH:-}" != 1 ]; then
+			die "profile $release requires OmniOS $builder_release; found $(uname -v)"
+		fi
+		printf 'WARNING: profile %s expects %s; found %s\n' \
+			"$release" "$builder_release" "$(uname -v)" >&2
+		;;
+	esac
+}
+
 install_omnios_deps() {
-	run_as_root pkg set-publisher -g "https://pkg.omnios.org/r151046/extra" extra.omnios
+	run_as_root pkg set-publisher -g \
+		"https://pkg.omnios.org/$builder_release/extra" extra.omnios
 	run_as_root pkg refresh --full
 	run_as_root pkg install --accept \
 		developer/build/onbld \
-		developer/gcc10 \
+		"$gate_compiler_package" \
 		developer/build/gnu-make \
 		developer/illumos-tools \
-		runtime/java/openjdk11 \
-		developer/versioning/git \
-		ooce/developer/rust
+		"$gate_jdk_package" \
+		developer/versioning/git
 }
 
 check_tools() {
-	for tool in git gmake gzip tar awk sed; do
+	for tool in git gmake gzip tar sed curl digest; do
 		command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
 	done
+	command -v "$awk_cmd" >/dev/null 2>&1 || die "missing required tool: $awk_cmd"
 	if [ -n "$source_date_epoch" ]; then
 		for tool in perl zip; do
 			command -v "$tool" >/dev/null 2>&1 ||
@@ -120,7 +225,10 @@ check_tools() {
 		done
 	fi
 	[ -x /opt/onbld/bin/nightly ] || die "missing /opt/onbld/bin/nightly"
-	[ -x /opt/gcc-10/bin/gcc ] || die "missing /opt/gcc-10/bin/gcc"
+	[ -x "$gate_cc" ] || die "missing profile compiler: $gate_cc"
+	[ -x "$gate_cxx" ] || die "missing profile C++ compiler: $gate_cxx"
+	[ -x "$gate_java_root/bin/jar" ] ||
+		die "missing profile JDK jar tool: $gate_java_root/bin/jar"
 	if [ "${ILLUMOS_SYSROOT_GATE_ONLY:-}" != 1 ] &&
 		! command -v cargo >/dev/null 2>&1; then
 		[ -x /opt/ooce/bin/cargo ] || die "missing cargo"
@@ -136,13 +244,92 @@ checkout_gate() {
 		git -C "$gate_dir" bundle unbundle "$gate_repo" >/dev/null
 		git -C "$gate_dir" cat-file -e "$gate_commit^{commit}"
 		git -C "$gate_dir" checkout -B "$gate_branch" "$gate_commit"
+	else
+		if ! git -C "$gate_dir" remote get-url origin >/dev/null 2>&1; then
+			git -C "$gate_dir" remote add origin "$gate_repo"
+		fi
+		fetch_target=$build_head_ref
+		if [ "$gate_commit" != "$profile_build_commit" ]; then
+			fetch_target=$gate_commit
+		fi
+		git -C "$gate_dir" fetch --depth "$build_history_depth" origin "$fetch_target"
+		git -C "$gate_dir" checkout -B "$gate_branch" FETCH_HEAD
+	fi
+
+	actual_commit=$(git -C "$gate_dir" rev-parse HEAD)
+	[ "$actual_commit" = "$gate_commit" ] ||
+		die "build head mismatch: expected $gate_commit, found $actual_commit"
+	git -C "$gate_dir" cat-file -e "$release_base_commit^{commit}" ||
+		die "release base $release_base_commit is absent from fetched history"
+	git -C "$gate_dir" merge-base --is-ancestor "$release_base_commit" "$gate_commit" ||
+		die "release base $release_base_commit is not an ancestor of $gate_commit"
+}
+
+check_gate_has_no_rust() {
+	rust_paths=$(git -C "$gate_dir" ls-tree -r --name-only HEAD | "$awk_cmd" '
+		/(^|\/)Cargo\.toml$/ || /\.rs$/ { print }
+	')
+	if [ -n "$rust_paths" ]; then
+		printf '%s\n' "$rust_paths" >&2
+		die "pinned gate contains Rust or Cargo sources"
+	fi
+}
+
+sha256_file() {
+	digest -a sha256 "$1"
+}
+
+fetch_verified_input() {
+	url=$1
+	expected=$2
+	destination=$3
+
+	if [ -f "$destination" ]; then
+		actual=$(sha256_file "$destination")
+		[ "$actual" = "$expected" ] ||
+			die "cached input checksum mismatch for $destination: $actual"
 		return
 	fi
-	if ! git -C "$gate_dir" remote get-url origin >/dev/null 2>&1; then
-		git -C "$gate_dir" remote add origin "$gate_repo"
+
+	temporary=$destination.part
+	rm -f "$temporary"
+	curl -fL --retry 3 -o "$temporary" "$url"
+	actual=$(sha256_file "$temporary")
+	[ "$actual" = "$expected" ] || {
+		rm -f "$temporary"
+		die "downloaded input checksum mismatch for $url: $actual"
+	}
+	mv "$temporary" "$destination"
+}
+
+prepare_closed_bins() {
+	mkdir -p "$closed_bins_cache"
+	closed_archive_path=$closed_bins_cache/$closed_bins_archive
+	closed_nd_archive_path=$closed_bins_cache/$closed_bins_nd_archive
+	fetch_verified_input "$closed_bins_base_url/$closed_bins_archive" \
+		"$closed_bins_sha256" "$closed_archive_path"
+	fetch_verified_input "$closed_bins_base_url/$closed_bins_nd_archive" \
+		"$closed_bins_nd_sha256" "$closed_nd_archive_path"
+
+	closed_stage=$workdir/closed-bins
+	closed_stamp=$closed_stage/closed-inputs.sha256
+	expected_stamp="$closed_bins_sha256  $closed_bins_archive
+$closed_bins_nd_sha256  $closed_bins_nd_archive"
+	if [ -d "$closed_stage" ]; then
+		[ -f "$closed_stamp" ] ||
+			die "refusing unverified closed-bins directory: $closed_stage"
+		actual_stamp=$(cat "$closed_stamp")
+		[ "$actual_stamp" = "$expected_stamp" ] ||
+			die "closed-bins input stamp mismatch: $closed_stamp"
+	else
+		mkdir -p "$closed_stage"
+		tar xjpf "$closed_archive_path" -C "$closed_stage"
+		tar xjpf "$closed_nd_archive_path" -C "$closed_stage"
+		printf '%s\n' "$expected_stamp" > "$closed_stamp"
 	fi
-	git -C "$gate_dir" fetch --depth 1 origin "$gate_commit"
-	git -C "$gate_dir" checkout -B "$gate_branch" FETCH_HEAD
+	closed_bins_dir=$closed_stage/closed
+	[ -d "$closed_bins_dir" ] ||
+		die "closed-bins archives did not produce $closed_bins_dir"
 }
 
 prepare_env_file() {
@@ -155,6 +342,11 @@ prepare_env_file() {
 				'print strftime("%Y%m%dT%H%M%SZ", gmtime($ARGV[0])), "\n"' \
 				"$source_date_epoch"
 		)
+		release_date=$(
+			LC_ALL=C perl -MPOSIX=strftime -e \
+				'print strftime("%B %Y", gmtime($ARGV[0])), "\n"' \
+				"$source_date_epoch"
+		)
 		cat >> "$gate_dir/illumos.$release.sh" <<EOF
 
 # Reproducible sysroot build settings from $0
@@ -162,12 +354,24 @@ export SOURCE_DATE_EPOCH=$source_date_epoch
 export ILLUMOS_SYSROOT_GATE_DIR="$gate_dir"
 export ILLUMOS_SYSROOT_DTRACE_KEY=$dtrace_suffix
 export ILLUMOS_SYSROOT_DTRACE_SUFFIX=$dtrace_suffix
-export PRIMARY_CC=gcc10,$repro_tools_dir/gcc,gnu
-export PRIMARY_CCC=gcc10,$repro_tools_dir/g++,gnu
+export RELEASE_DATE="$release_date"
+export VERSION="$gate_version"
+export BUILDVERSION_EXEC="$repro_tools_dir/buildversion"
+export PRIMARY_CC=$gate_compiler_name,$repro_tools_dir/gcc,gnu
+export PRIMARY_CCC=$gate_compiler_name,$repro_tools_dir/g++,gnu
+export GCC_ROOT=$gate_compiler_root
+export GNUC_ROOT=$gate_compiler_root
+export BUILD_LINT=$repro_tools_dir/lint
 export DTRACE="$repro_tools_dir/dtrace -xnolibs"
 export PKG_PUBLICATION_TIMESTAMP=$pkg_publication_timestamp
+export ILLUMOS_SYSROOT_REAL_JAR="$gate_java_root/bin/jar"
 EOF
 	fi
+	cat >> "$gate_dir/illumos.$release.sh" <<EOF
+
+# Verified stock closed bins from $0
+export ON_CLOSED_BINS="$closed_bins_dir"
+EOF
 	if [ -n "$jobs" ]; then
 		printf '\n# Override from %s\nexport DMAKE_MAX_JOBS=%s\n' "$0" "$jobs" \
 			>> "$gate_dir/illumos.$release.sh"
@@ -182,6 +386,28 @@ prepare_repro_tools() {
 
 	repro_tools_dir=$workdir/repro-tools
 	mkdir -p "$repro_tools_dir"
+	canonical_gate_dir=/tmp/illumos-sysroot-gate-$release
+	if [ "$release" = 20181213 ]; then
+		if [ -L "$canonical_gate_dir" ]; then
+			rm -f "$canonical_gate_dir"
+		elif [ -e "$canonical_gate_dir" ]; then
+			die "refusing non-symlink canonical gate path: $canonical_gate_dir"
+		fi
+		ln -s "$gate_dir" "$canonical_gate_dir"
+	fi
+	cp /opt/onbld/bin/nightly "$repro_tools_dir/nightly"
+	REPRO_NIGHTLY_TMPROOT=$TMPDIR perl -pi -e '
+	    if ($_ eq qq{TMPDIR="/tmp/nightly.tmpdir.\$\$"\n}) {
+		$_ = qq{TMPDIR="$ENV{REPRO_NIGHTLY_TMPROOT}/nightly.tmpdir.\$\$"\n};
+	    }
+	' "$repro_tools_dir/nightly"
+	expected_nightly_tmpdir='TMPDIR="'"$TMPDIR"'/nightly.tmpdir.$$"'
+	grep -Fxq "$expected_nightly_tmpdir" "$repro_tools_dir/nightly" ||
+		die "patching nightly temporary directory"
+	chmod +x "$repro_tools_dir/nightly"
+	pkg_python=$(sed -n '1s/^#![[:space:]]*\([^[:space:]]*\).*/\1/p' /usr/bin/pkg)
+	[ -n "$pkg_python" ] && [ -x "$pkg_python" ] ||
+		die "could not determine IPS Python interpreter from /usr/bin/pkg"
 	cat > "$repro_tools_dir/jar" <<'EOF'
 #!/usr/bin/perl
 #
@@ -534,7 +760,7 @@ ftok(const char *path, int id)
 	return ((key_t)strtol(key, NULL, 10));
 }
 EOF
-	/opt/gcc-10/bin/gcc -m64 -fPIC -shared \
+	"$gate_cc" -m64 -fPIC -shared \
 		-o "$repro_tools_dir/dtrace-ftok.so" \
 		"$repro_tools_dir/dtrace-ftok.c"
 	cat > "$repro_tools_dir/sqlite2-normalize.c" <<'EOF'
@@ -625,6 +851,123 @@ main(int argc, char **argv)
 	return (0);
 }
 EOF
+	cat > "$repro_tools_dir/proto-normalize" <<'EOF'
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use File::Find;
+
+my $epoch = shift @ARGV;
+die "usage: $0 EPOCH ROOT...\n"
+    unless defined($epoch) && $epoch =~ /^[0-9]+$/ && @ARGV;
+
+sub normalize_pyc {
+	my ($path) = @_;
+	open(my $file, "+<", $path) or die "open $path: $!\n";
+	binmode($file);
+	my $magic;
+	read($file, $magic, 4) == 4 or die "read magic $path: $!\n";
+	seek($file, 4, 0) or die "seek $path: $!\n";
+	print {$file} pack("V", $epoch) or die "write timestamp $path: $!\n";
+	close($file) or die "close $path: $!\n";
+}
+
+sub normalize_javadoc {
+	my ($path) = @_;
+	open(my $in, "<", $path) or die "open $path: $!\n";
+	local $/;
+	my $html = <$in>;
+	close($in) or die "close $path: $!\n";
+
+	$html =~ s{(<tbody>\n)(.*?)(</tbody>)}{
+		my ($open, $body, $close) = ($1, $2, $3);
+		my @rows = ($body =~
+		    m{(<tr class="(?:altColor|rowColor)">.*?</tr>\n?)}sg);
+		my $remainder = $body;
+		$remainder =~
+		    s{<tr class="(?:altColor|rowColor)">.*?</tr>\n?}{}sg;
+		if (@rows && $remainder !~ /\S/) {
+			for my $row (@rows) {
+				$row =~ s{<tr class="(?:altColor|rowColor)">}
+				    {<tr class="COLOR">};
+			}
+			@rows = sort @rows;
+			for (my $i = 0; $i < @rows; $i++) {
+				my $class = $i % 2 == 0 ? "altColor" : "rowColor";
+				$rows[$i] =~
+				    s{<tr class="COLOR">}{<tr class="$class">};
+			}
+			$body = join("", @rows);
+		}
+		$open . $body . $close;
+	}esg;
+
+	my @lines = split(/(?<=\n)/, $html);
+	my (@output, @items);
+	for my $line (@lines) {
+		if ($line =~ /^\s*<li type="circle">.*<\/li>\s*$/) {
+			push @items, $line;
+			next;
+		}
+		push @output, sort @items;
+		@items = ();
+		push @output, $line;
+	}
+	push @output, sort @items;
+	my $normalized = join("", @output);
+	return if $normalized eq $html;
+
+	open(my $out, ">", $path) or die "open $path: $!\n";
+	print {$out} $normalized or die "write $path: $!\n";
+	close($out) or die "close $path: $!\n";
+}
+
+for my $root (@ARGV) {
+	next unless -d $root;
+	find({
+		no_chdir => 1,
+		wanted => sub {
+			return unless -f $_;
+			if (/\.pyc$/) {
+				normalize_pyc($_);
+			} elsif (/\.html$/ &&
+			    m{/usr/share/lib/java/javadoc/}) {
+				normalize_javadoc($_);
+			}
+		},
+	}, $root);
+}
+EOF
+	cat > "$repro_tools_dir/svccfg" <<EOF
+#!/bin/sh
+
+set -eu
+
+real=\$1
+shift
+if [ "\${1:-}" = import ] && [ "\$#" -eq 2 ]; then
+	input=\$2
+	input_dir=\$(dirname -- "\$input")
+	input_base=\${input##*/}
+	input_dir=\$(CDPATH= cd -- "\$input_dir" && pwd)
+	input=\$input_dir/\$input_base
+	case "\$input" in
+	"$gate_dir"/*)
+		relative=\${input#"$gate_dir"/}
+		canonical="/tmp/illumos-sysroot-svccfg-$release/\$relative"
+		mkdir -p "\$(dirname -- "\$canonical")"
+		cp "\$input" "\$canonical"
+		set -- import "\$canonical"
+		;;
+	*)
+		echo "ERROR: svccfg import escaped the gate: \$input" >&2
+		exit 1
+		;;
+	esac
+fi
+exec "\$real" "\$@"
+EOF
 	cat > "$repro_tools_dir/pkg-tool.py" <<'EOF'
 """Run an IPS command with reproducible time and iteration order."""
 
@@ -655,9 +998,18 @@ class ReproducibleDateTime(real_datetime):
 datetime.datetime = ReproducibleDateTime
 tool = sys.argv.pop(1)
 if os.path.basename(tool) == "pkgrepo":
-    import pkg.site_paths
-
-    pkg.site_paths.init()
+    try:
+        import pkg.site_paths
+    except ImportError:
+        # Older IPS releases expose pkg.indexer directly and have no
+        # pkg.site_paths module.  Importing the repository first also avoids
+        # a circular import between pkg.lockfile and pkg.catalog there.
+        import pkg.server.repository
+    else:
+        # Newer IPS adds the pycurl module directory here.  Match the stock
+        # pkgrepo initialization order before importing the repository.
+        pkg.site_paths.init()
+        import pkg.server.repository
     import pkg.indexer
 
     original_process_fmris = pkg.indexer.Indexer._process_fmris
@@ -672,31 +1024,107 @@ sys.argv[0] = tool
 runpy.run_path(tool, run_name="__main__")
 EOF
 	for pkg_tool in pkgdepend pkgrepo pkgsend; do
-		cat > "$repro_tools_dir/$pkg_tool" <<'EOF'
+		cat > "$repro_tools_dir/$pkg_tool" <<EOF
 #!/bin/sh
 
 set -eu
 
-tool=${0##*/}
-tool_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+tool=\${0##*/}
+tool_dir=\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd)
 export PYTHONHASHSEED=0
-exec /usr/bin/python3.11 -s "$tool_dir/pkg-tool.py" "/usr/bin/$tool" "$@"
+exec "$pkg_python" -s "\$tool_dir/pkg-tool.py" "/usr/bin/\$tool" "\$@"
 EOF
 	done
+	cat > "$repro_tools_dir/lint" <<'EOF'
+#!/bin/sh
+#
+# The old gate installs lint-library side products even when nightly was not
+# asked to run a lint pass.  Sun Studio lint is no longer a durable input, so
+# create deterministic placeholders for those non-runtime build products.
+
+set -eu
+
+output=
+dirout=
+sources=
+want_output=false
+for arg do
+	if $want_output; then
+		output=$arg
+		want_output=false
+		continue
+	fi
+	case "$arg" in
+	-o) want_output=true ;;
+	-dirout=*) dirout=${arg#-dirout=} ;;
+	*.c) sources="$sources $arg" ;;
+	esac
+done
+
+if [ -n "$output" ]; then
+	: > "llib-l$output.ln"
+fi
+if [ -n "$dirout" ]; then
+	mkdir -p "$dirout"
+	for source in $sources; do
+		base=${source##*/}
+		: > "$dirout/${base%.c}.ln"
+	done
+fi
+EOF
+	cat > "$repro_tools_dir/buildversion" <<'EOF'
+#!/bin/sh
+
+set -eu
+: "${VERSION:?}"
+printf '%s\n' "$VERSION"
+EOF
 	for compiler in gcc g++; do
-		cat > "$repro_tools_dir/$compiler" <<'EOF'
+		case "$compiler" in
+		gcc) real_compiler=$gate_cc ;;
+		g++) real_compiler=$gate_cxx ;;
+		esac
+		if [ "$release" = 20181213 ]; then
+			cat > "$repro_tools_dir/$compiler" <<EOF
 #!/bin/sh
 
 set -eu
 
-compiler=${0##*/}
-: "${ILLUMOS_SYSROOT_GATE_DIR:?}"
-exec "/opt/gcc-10/bin/$compiler" \
-	"-ffile-prefix-map=${ILLUMOS_SYSROOT_GATE_DIR}=." "$@"
+compiler=\${0##*/}
+: "\${ILLUMOS_SYSROOT_GATE_DIR:?}"
+remaining=\$#
+while [ "\$remaining" -gt 0 ]; do
+	arg=\$1
+	shift
+	case "\$arg" in
+	"\$ILLUMOS_SYSROOT_GATE_DIR"/*)
+		arg="$canonical_gate_dir/\${arg#"\$ILLUMOS_SYSROOT_GATE_DIR"/}"
+		;;
+	esac
+	set -- "\$@" "\$arg"
+	remaining=\$((remaining - 1))
+done
+exec "$real_compiler" \
+	"${gate_prefix_map_flag}=\${ILLUMOS_SYSROOT_GATE_DIR}=." \
+	"${gate_prefix_map_flag}=$canonical_gate_dir=." "\$@"
 EOF
+		else
+			cat > "$repro_tools_dir/$compiler" <<EOF
+#!/bin/sh
+
+set -eu
+
+compiler=\${0##*/}
+: "\${ILLUMOS_SYSROOT_GATE_DIR:?}"
+exec "$real_compiler" \
+	"${gate_prefix_map_flag}=\${ILLUMOS_SYSROOT_GATE_DIR}=." "\$@"
+EOF
+		fi
 	done
 	chmod +x "$repro_tools_dir/jar" "$repro_tools_dir/dtrace" \
 		"$repro_tools_dir/gcc" "$repro_tools_dir/g++" \
+		"$repro_tools_dir/lint" "$repro_tools_dir/buildversion" \
+		"$repro_tools_dir/proto-normalize" "$repro_tools_dir/svccfg" \
 		"$repro_tools_dir/pkgdepend" "$repro_tools_dir/pkgrepo" \
 		"$repro_tools_dir/pkgsend"
 }
@@ -716,15 +1144,26 @@ apply_gate_repro_patches() {
 
 	if ! grep -q 'PKG_PUBLICATION_TIMESTAMP' "$gate_dir/usr/src/pkg/Makefile"; then
 		REPRO_PKGSEND=$repro_tools_dir/pkgsend perl -0pi -e '
-		    my $fin = "\t\t    \$(<) \$(PM_FINAL_TRANSFORMS); \\\n";
-		    my $ts = "\t\tif [ -n \"\$(PKG_PUBLICATION_TIMESTAMP)\" ]; then \\\n" .
-			"\t\t\t\$(SED) -e \"/^set name=pkg.fmri value=/s/\$\$\/:\$(PKG_PUBLICATION_TIMESTAMP)\/\" \\\n" .
-			"\t\t\t    \$(@) > \$(@).timestamped; \\\n" .
-			"\t\t\t\$(MV) \$(@).timestamped \$(@); \\\n" .
-			"\t\tfi; \\\n";
-		    s/\Q$fin\E/$fin$ts/ or die;
+		    my $old_package_chain = index($_, "\$(PDIR)/%.fin:") < 0;
+		    if (!$old_package_chain) {
+			my $fin = "\t\t    \$(<) \$(PM_FINAL_TRANSFORMS); \\\n";
+			my $ts = "\t\tif [ -n \"\$(PKG_PUBLICATION_TIMESTAMP)\" ]; then \\\n" .
+			    "\t\t\t\$(SED) -e \"/^set name=pkg.fmri value=/s/\$\$\/:\$(PKG_PUBLICATION_TIMESTAMP)\/\" \\\n" .
+			    "\t\t\t    \$(@) > \$(@).timestamped; \\\n" .
+			    "\t\t\t\$(MV) \$(@).timestamped \$(@); \\\n" .
+			    "\t\tfi; \\\n";
+			s/\Q$fin\E/$fin$ts/ or die;
+		    }
 		    my $pub = "\t\tpkgsend -s file://\$(PKGDEST)/repo.\$\$r publish \\\n";
-		    my $pubts = "\t\tif [ -n \"\$(PKG_PUBLICATION_TIMESTAMP)\" ]; then \\\n" .
+		    my $pubts = "";
+		    if ($old_package_chain) {
+			$pubts .= "\t\tif [ -n \"\$(PKG_PUBLICATION_TIMESTAMP)\" ]; then \\\n" .
+			    "\t\t\t\$(SED) -e \"/^set name=pkg.fmri value=/s/\$\$\/:\$(PKG_PUBLICATION_TIMESTAMP)\/\" \\\n" .
+			    "\t\t\t    \$(<) > \$(<).timestamped; \\\n" .
+			    "\t\t\t\$(MV) \$(<).timestamped \$(<); \\\n" .
+			    "\t\tfi; \\\n";
+		    }
+		    $pubts .= "\t\tif [ -n \"\$(PKG_PUBLICATION_TIMESTAMP)\" ]; then \\\n" .
 			"\t\t\tPKGSEND=\"$ENV{REPRO_PKGSEND} -D allow-timestamp\"; \\\n" .
 			"\t\telse \\\n" .
 			"\t\t\tPKGSEND=$ENV{REPRO_PKGSEND}; \\\n" .
@@ -734,7 +1173,8 @@ apply_gate_repro_patches() {
 		' "$gate_dir/usr/src/pkg/Makefile"
 	fi
 
-	if [ -x /usr/bin/gar ] &&
+	if [ -f "$gate_dir/usr/src/lib/ssp_ns/Makefile.com" ] &&
+		[ -x /usr/bin/gar ] &&
 		! grep -q '^ARFLAGS[	 ]*=.*crD' "$gate_dir/usr/src/lib/ssp_ns/Makefile.com"; then
 		perl -0pi -e '
 		    my $needle = "include ../../Makefile.lib\n";
@@ -744,6 +1184,49 @@ apply_gate_repro_patches() {
 	fi
 
 	repro_tools_dir=$workdir/repro-tools
+	if [ "$release" = 20181213 ]; then
+		spellin=$gate_dir/usr/src/cmd/spell/spellin.c
+		if grep -Fq 'table = (unsigned *)malloc(ND * sizeof (*table));' \
+			"$spellin"; then
+			perl -0pi -e '
+			    s/table = \(unsigned \*\)malloc\(ND \* sizeof \(\*table\)\);/
+			      table = (unsigned *)calloc(ND, sizeof (*table));/ or die;
+			' "$spellin"
+		fi
+		grep -Fq 'table = (unsigned *)calloc(ND, sizeof (*table));' \
+			"$spellin" || die "patching deterministic spell table allocation"
+
+		seed_makefile=$gate_dir/usr/src/cmd/svc/seed/Makefile
+		if ! grep -Fq "$repro_tools_dir/svccfg" "$seed_makefile"; then
+			REPRO_SVCCFG=$repro_tools_dir/svccfg perl -0pi -e '
+			    my $variable = "SVCCFG = ../svccfg/svccfg-native\n";
+			    my $insert = $variable .
+				"REPRO_SVCCFG = $ENV{REPRO_SVCCFG}\n";
+			    s/\Q$variable\E/$insert/ or die;
+			    s/\$\(SVCCFG\) import \$\$m/\$(REPRO_SVCCFG) \$(SVCCFG) import \$\$m/g;
+			' "$seed_makefile"
+		fi
+		grep -Fq '$(REPRO_SVCCFG) $(SVCCFG) import $$m' \
+			"$seed_makefile" || die "patching deterministic svccfg imports"
+
+		pkg_makefile=$gate_dir/usr/src/pkg/Makefile
+		if ! grep -Fq "$repro_tools_dir/proto-normalize" "$pkg_makefile"; then
+			REPRO_PROTO=$repro_tools_dir/proto-normalize perl -0pi -e '
+			    my $target = "\$(PUB_PKGS): stage-licenses\n";
+			    my $insert =
+				"REPRO_PROTO = $ENV{REPRO_PROTO}\n" .
+				"REPRO_PROTO_STAMP = \$(PDIR)/.repro-proto\n\n" .
+				"\$(REPRO_PROTO_STAMP): \$(PDIR)/gendeps\n" .
+				"\t\$(REPRO_PROTO) \$(SOURCE_DATE_EPOCH) " .
+				    "\$(PKGROOT) \$(TOOLSROOT)\n" .
+				"\t\$(TOUCH) \$(@)\n\n" .
+				"\$(PUB_PKGS): stage-licenses \$(REPRO_PROTO_STAMP)\n";
+			    s/\Q$target\E/$insert/ or die;
+			' "$pkg_makefile"
+		fi
+		grep -Fq '$(PUB_PKGS): stage-licenses $(REPRO_PROTO_STAMP)' \
+			"$pkg_makefile" || die "patching proto normalization"
+	fi
 	if ! grep -q 'ILLUMOS_SYSROOT_REPRO_SQLITE' \
 		"$gate_dir/usr/src/lib/libsqlite/Makefile.com"; then
 		perl -0pi -e '
@@ -822,18 +1305,47 @@ apply_gate_repro_patches() {
 			"-o \$@ \$(REPRO_SQLITE_SOURCE) \$(REPRO_SQLITE_OBJECT)\n\n" .
 			$configd;
 		    s/\Q$configd\E/$rule/ or die;
-
-		    for my $target (qw(global.db nonglobal.db miniroot.db)) {
-			my $head = "$target: common.db";
-			s/\Q$head\E/$head \$(REPRO_SQLITE)/ or die;
-		    }
-		    my $global = "\t\$(IMPORT.mfst) \$(GLOBAL_ZONE_DESCRIPTIONS)\n";
-		    s/\Q$global\E/$global\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
-		    my $nonglobal = "\t\$(IMPORT.mfst) \$(NONGLOBAL_ZONE_DESCRIPTIONS)\n";
-		    s/\Q$nonglobal\E/$nonglobal\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
-		    my $last = "\t    setprop config/local_only = true\n";
-		    s/\Q$last\E/$last\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
 		' "$gate_dir/usr/src/cmd/svc/seed/Makefile"
+
+		if grep -Fq '$(IMPORT.mfst)' \
+			"$gate_dir/usr/src/cmd/svc/seed/Makefile"; then
+			perl -0pi -e '
+			    for my $target (qw(global.db nonglobal.db miniroot.db)) {
+				my $head = "$target: common.db";
+				s/\Q$head\E/$head \$(REPRO_SQLITE)/ or die;
+			    }
+			    my $global = "\t\$(IMPORT.mfst) \$(GLOBAL_ZONE_DESCRIPTIONS)\n";
+			    s/\Q$global\E/$global\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
+			    my $nonglobal = "\t\$(IMPORT.mfst) \$(NONGLOBAL_ZONE_DESCRIPTIONS)\n";
+			    s/\Q$nonglobal\E/$nonglobal\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
+			    my $last = "\t    setprop config/local_only = true\n";
+			    s/\Q$last\E/$last\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) \$@\n/ or die;
+			' "$gate_dir/usr/src/cmd/svc/seed/Makefile"
+		else
+			perl -0pi -e '
+			    for my $target (qw(global.db nonglobal.db miniroot.db)) {
+				my $head = "$target: common.db";
+				s/\Q$head\E/$head \$(REPRO_SQLITE)/ or die;
+			    }
+			    my $global_end = "\tdone\n\n" .
+				"nonglobal.db:";
+			    my $global_new = "\tdone\n" .
+				"\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) global.db\n\n" .
+				"nonglobal.db:";
+			    s/\Q$global_end\E/$global_new/ or die;
+			    my $nonglobal_end = "\tdone\n\n" .
+				"miniroot.db:";
+			    my $nonglobal_new = "\tdone\n" .
+				"\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) nonglobal.db\n\n" .
+				"miniroot.db:";
+			    s/\Q$nonglobal_end\E/$nonglobal_new/ or die;
+			    my $last = "\t\$(SVCCFG) -s svc:/network/rpc/bind " .
+				"setprop config/local_only = true\n";
+			    my $last_new = $last .
+				"\t\$(REPRO_SQLITE) \$(SOURCE_DATE_EPOCH) miniroot.db\n";
+			    s/\Q$last\E/$last_new/ or die;
+			' "$gate_dir/usr/src/cmd/svc/seed/Makefile"
+		fi
 	fi
 
 	if ! grep -q 'LC_ALL=C.*SORT' "$gate_dir/usr/src/lib/pyzfs/Makefile"; then
@@ -845,29 +1357,39 @@ apply_gate_repro_patches() {
 		' "$gate_dir/usr/src/lib/pyzfs/Makefile"
 	fi
 
+	compileall_flags='-s $(ROOT)'
+	if [ "$release" = 20181213 ]; then
+		# r151030's Python predates compileall -s.  -d still replaces the
+		# embedded source filename with a stable, checkout-independent value.
+		compileall_flags='-d .'
+	fi
+
 	for makefile in \
 		"$gate_dir/usr/src/lib/pyzfs/py3/Makefile" \
 		"$gate_dir/usr/src/lib/pysolaris/py3/Makefile"; do
 		if grep -Fq '$(PYTHON3) -mpy_compile $@' "$makefile"; then
-			perl -0pi -e '
+			REPRO_COMPILEALL_FLAGS=$compileall_flags perl -0pi -e '
 			    s{\$\(PYTHON3\) -mpy_compile \$@}
-			      {\$(PYTHON3) -m compileall -q -f -s \$(ROOT) \$@} or die;
+			      {\$(PYTHON3) -m compileall -q -f $ENV{REPRO_COMPILEALL_FLAGS} \$@} or die;
 			' "$makefile"
 		fi
-		grep -Fq '$(PYTHON3) -m compileall -q -f -s $(ROOT) $@' \
+		expected_compileall='$(PYTHON3) -m compileall -q -f '"$compileall_flags"' $@'
+		grep -Fq "$expected_compileall" \
 			"$makefile" || die "patching Python 3 bytecode rule in $makefile"
 	done
 
 	for makefile in \
 		"$gate_dir/usr/src/lib/pyzfs/py3b/Makefile" \
 		"$gate_dir/usr/src/lib/pysolaris/py3b/Makefile"; do
+		[ -f "$makefile" ] || continue
 		if grep -Fq '$(PYTHON3b) -mpy_compile $@' "$makefile"; then
-			perl -0pi -e '
+			REPRO_COMPILEALL_FLAGS=$compileall_flags perl -0pi -e '
 			    s{\$\(PYTHON3b\) -mpy_compile \$@}
-			      {\$(PYTHON3b) -m compileall -q -f -s \$(ROOT) \$@} or die;
+			      {\$(PYTHON3b) -m compileall -q -f $ENV{REPRO_COMPILEALL_FLAGS} \$@} or die;
 			' "$makefile"
 		fi
-		grep -Fq '$(PYTHON3b) -m compileall -q -f -s $(ROOT) $@' \
+		expected_compileall='$(PYTHON3b) -m compileall -q -f '"$compileall_flags"' $@'
+		grep -Fq "$expected_compileall" \
 			"$makefile" || die "patching Python 3b bytecode rule in $makefile"
 	done
 
@@ -912,7 +1434,11 @@ apply_gate_repro_patches() {
 
 run_nightly() {
 	cd "$gate_dir"
-	/opt/onbld/bin/nightly "./illumos.$release.sh" > "$workdir/nightly-$release.out" 2>&1
+	nightly=/opt/onbld/bin/nightly
+	if [ -n "$source_date_epoch" ]; then
+		nightly=$repro_tools_dir/nightly
+	fi
+	"$nightly" "./illumos.$release.sh" > "$workdir/nightly-$release.out" 2>&1
 }
 
 latest_mail_msg() {
@@ -927,7 +1453,7 @@ check_nightly_summary() {
 	mail_msg=$(latest_mail_msg)
 	[ -n "$mail_msg" ] && [ -f "$mail_msg" ] || die "nightly did not produce mail_msg"
 
-	awk '
+	"$awk_cmd" '
 		/^==== (Make clobber ERRORS|Make tools clobber ERRORS|Bootstrap build errors|Tools build errors|Build errors \(non-DEBUG\)|package build errors \(non-DEBUG\)) ====/ {
 			section=$0
 			next
@@ -956,7 +1482,19 @@ build_archive() {
 	repo=$gate_dir/packages/i386/nightly-nd/repo.redist
 	mkdir -p "$output"
 	cd "$repo_root"
-	PATH=/opt/ooce/bin:/opt/gcc-10/bin:$PATH \
+	actual_cargo_lock_sha=$(sha256_file "$repo_root/mf2tar/Cargo.lock")
+	[ "$actual_cargo_lock_sha" = "$mf2tar_cargo_lock_sha256" ] ||
+		die "mf2tar Cargo.lock checksum mismatch: $actual_cargo_lock_sha"
+	if command -v rustc >/dev/null 2>&1; then
+		rustc_path=$(command -v rustc)
+	else
+		rustc_path=/opt/ooce/bin/rustc
+	fi
+	actual_rust_toolchain=$("$rustc_path" --version | "$awk_cmd" '{ print $2 }')
+	[ "$actual_rust_toolchain" = "$mf2tar_rust_toolchain" ] ||
+		die "mf2tar requires Rust $mf2tar_rust_toolchain; found $actual_rust_toolchain"
+	gate_compiler_dir=$(dirname "$gate_cc")
+	PATH=/opt/ooce/bin:$gate_compiler_dir:$PATH \
 		gmake archive RELEASE="$release" OUTPUT="$output" ILLUMOS_PKGREPO="$repo"
 }
 
@@ -972,7 +1510,7 @@ verify_archive() {
 	if command -v digest >/dev/null 2>&1; then
 		sha256=$(digest -a sha256 "$archive")
 	else
-		sha256=$(sha256sum "$archive" | awk '{ print $1 }')
+		sha256=$(sha256sum "$archive" | "$awk_cmd" '{ print $1 }')
 	fi
 
 	cat > "$archive.sha256" <<EOF
@@ -984,12 +1522,34 @@ EOF
 	printf 'sha256=%s\n' "$sha256"
 }
 
-if $install_deps; then
-	install_omnios_deps
+check_builder_release
+toolchain_dir=${OMNIOS_TOOLCHAIN_DIR:-}
+if [ -n "$toolchain_dir" ]; then
+	checked_lock=$repo_root/locks/toolchain.$release.lock
+	kit_lock=$toolchain_dir/toolchain.$release.lock
+	[ -f "$checked_lock" ] || die "missing checked-in toolchain lock: $checked_lock"
+	[ -f "$kit_lock" ] || die "missing toolchain-kit lock: $kit_lock"
+	cmp -s "$checked_lock" "$kit_lock" ||
+		die "toolchain-kit lock does not match $checked_lock"
+	if $install_deps; then
+		"$repo_root/scripts/install-omnios-toolchain.sh" "$toolchain_dir"
+	else
+		"$repo_root/scripts/install-omnios-toolchain.sh" -v "$toolchain_dir"
+	fi
+else
+	if [ "${ILLUMOS_SYSROOT_REQUIRE_LOCKED_TOOLCHAIN:-}" = 1 ]; then
+		die "OMNIOS_TOOLCHAIN_DIR is required for this build"
+	fi
+	if $install_deps; then
+		printf 'WARNING: installing development packages from live publishers\n' >&2
+		install_omnios_deps
+	fi
 fi
 
 check_tools
 checkout_gate
+check_gate_has_no_rust
+prepare_closed_bins
 prepare_repro_tools
 prepare_env_file
 apply_gate_repro_patches

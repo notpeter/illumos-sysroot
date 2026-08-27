@@ -61,9 +61,13 @@ EXCLUDE_DIRS ?=		usr/share \
 			sbin \
 			bin
 
+EXCLUDE_DIRS +=		$(PROFILE_EXCLUDE_PATHS)
+
 LIBGCC_VERSION ?=	4_8_0
 PREBUILT_SHIMS ?=	false
 PREBUILT_SHIM_DIR ?=
+SHIM_CC ?=		$(if $(GATE_CC),$(GATE_CC),gcc)
+SHIM_LD ?=		/usr/bin/ld
 
 #
 # Shim libraries that we generate for artefacts that come from consolidations
@@ -94,10 +98,11 @@ all: archive
 shims: $(SHIM_PREREQS)
 
 $(LIBGCC_32) $(LIBGCC_64):
-	$(MAKE) -C shims/libgcc_s VERSION=$(LIBGCC_VERSION)
+	$(MAKE) -C shims/libgcc_s VERSION=$(LIBGCC_VERSION) \
+	    CC=$(SHIM_CC) LD=$(SHIM_LD)
 
 $(LIBSSP_32) $(LIBSSP_64):
-	$(MAKE) -C shims/libssp
+	$(MAKE) -C shims/libssp CC=$(SHIM_CC) LD=$(SHIM_LD)
 
 .PHONY: check-prebuilt-shims
 check-prebuilt-shims:
@@ -136,9 +141,19 @@ check-pkgrepo:
 ident:
 	@printf 'release: %s\n' '$(if $(RELEASE),$(RELEASE),(none: custom build))'
 	@printf 'tarversion: %s\n' '$(TARVERSION)'
-	@printf 'gate branch: %s\n' '$(if $(GATE_BRANCH),$(GATE_BRANCH),(none))'
-	@printf 'gate commit: %s\n' '$(if $(GATE_COMMIT),$(GATE_COMMIT),(none))'
+	@printf 'release base: %s\n' '$(if $(RELEASE_BASE_COMMIT),$(RELEASE_BASE_COMMIT),(none))'
+	@printf 'build head ref: %s\n' '$(if $(BUILD_HEAD_REF),$(BUILD_HEAD_REF),(none))'
+	@printf 'build head commit: %s\n' '$(if $(BUILD_HEAD_COMMIT),$(BUILD_HEAD_COMMIT),(none))'
+	@printf 'gate version: %s\n' '$(if $(GATE_VERSION),$(GATE_VERSION),(unspecified))'
+	@printf 'builder release: %s\n' '$(if $(BUILDER_RELEASE),$(BUILDER_RELEASE),(unspecified))'
 	@printf 'build host: %s\n' '$(if $(BUILD_HOST),$(BUILD_HOST),(unspecified))'
+	@printf 'gate compiler: %s (%s)\n' '$(if $(GATE_COMPILER_NAME),$(GATE_COMPILER_NAME),(unspecified))' '$(if $(GATE_CC),$(GATE_CC),(unspecified))'
+	@printf 'shim compiler: %s\n' '$(SHIM_CC)'
+	@printf 'shim linker: %s\n' '$(SHIM_LD)'
+	@printf 'shim compiler package: %s\n' '$(if $(SHIM_COMPILER_PACKAGE),$(SHIM_COMPILER_PACKAGE),(unspecified))'
+	@printf 'shim linker package: %s\n' '$(if $(SHIM_LINKER_PACKAGE),$(SHIM_LINKER_PACKAGE),(unspecified))'
+	@printf 'gate lint mode: %s\n' '$(if $(GATE_LINT_MODE),$(GATE_LINT_MODE),(unspecified))'
+	@printf 'gate JDK package: %s\n' '$(if $(GATE_JDK_PACKAGE),$(GATE_JDK_PACKAGE),(unspecified))'
 	@printf 'source date epoch: %s\n' '$(if $(SOURCE_DATE_EPOCH),$(SOURCE_DATE_EPOCH),(current time))'
 	@printf 'libgcc_s version: %s\n' '$(LIBGCC_VERSION)'
 	@printf 'packages: %s\n' '$(INCLUDE_PACKAGES)'
@@ -146,6 +161,14 @@ ident:
 .PHONY: print-packages
 print-packages:
 	@printf '%s\n' $(INCLUDE_PACKAGES)
+
+.PHONY: print-gate-tool-packages
+print-gate-tool-packages:
+	@printf '%s\n' $(GATE_TOOL_PACKAGES)
+
+.PHONY: print-builder-release
+print-builder-release:
+	@printf '%s\n' '$(BUILDER_RELEASE)'
 
 .PHONY: archive
 archive: check-pkgrepo $(SHIM_PREREQS) | $(OUTPUT) $(MF2TAR)

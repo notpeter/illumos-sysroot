@@ -12,17 +12,33 @@ on:
         default: false
 
 jobs:
+  release-locks:
+    runs-on: ubuntu-latest
+    name: Verify locked profile (${{ matrix.release }})
+    strategy:
+      fail-fast: false
+      matrix:
+        release:
+          - '20181213'
+          - '20210501'
+          - '20231226'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify profile against durable lock
+        run: scripts/validate-release-lock.sh "${{ matrix.release }}"
+
   archive:
     runs-on: ubuntu-latest
-    name: Assemble sysroot on OmniOS r151046
+    name: Installed-package smoke on OmniOS r151046
     steps:
       - uses: actions/checkout@v7
 
       - name: Build archive in OmniOS
-        uses: vmactions/omnios-vm@027e3ec08fed6fb740ab5f300c2605f9de02997a # v1.3.4
+        # v1.3.2 is the newest release whose image set includes r151046.
+        uses: vmactions/omnios-vm@d42d894b41dd58cf7e31c194709a1c0fe3d04ace # v1.3.2
         with:
           release: r151046
-          cache-after-prepare: true
           prepare: |
             pkg publisher extra.omnios >/dev/null 2>&1 || \
               pkg set-publisher -g https://pkg.omnios.org/r151046/extra extra.omnios
@@ -65,26 +81,26 @@ jobs:
   build-env:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full-gate-build }}
-    name: Preserve OmniOS build packages
+    name: Recreate locked r151046 gate kit
     steps:
       - uses: actions/checkout@v7
 
       - name: Archive build packages in OmniOS
-        uses: vmactions/omnios-vm@027e3ec08fed6fb740ab5f300c2605f9de02997a # v1.3.4
+        # v1.3.2 is the newest release whose image set includes r151046.
+        uses: vmactions/omnios-vm@d42d894b41dd58cf7e31c194709a1c0fe3d04ace # v1.3.2
         with:
           release: r151046
-          cache-after-prepare: true
           run: |
             set -eu
+            set -- $(nawk -F '\t' \
+              '$1 == "requested_fmri" { print $2 }' \
+              locks/toolchain.20231226.lock)
             OMNIOS_ARCHIVE_WORKDIR="$PWD/.sysroot-ci/work" \
-              scripts/archive-omnios-build-env.sh .sysroot-ci/build-env \
-              developer/build/onbld \
-              developer/gcc10 \
-              developer/build/gnu-make \
-              developer/illumos-tools \
-              runtime/java/openjdk11 \
-              developer/versioning/git \
-              ooce/developer/rust
+            OMNIOS_TOOLCHAIN_CLOSURE_LOCK="$PWD/locks/toolchain.20231226.lock" \
+              scripts/archive-omnios-build-env.sh -r 20231226 \
+              .sysroot-ci/build-env "$@"
+            cmp locks/toolchain.20231226.lock \
+              .sysroot-ci/build-env/toolchain.20231226.lock
 
       - name: Upload build package archives
         uses: actions/upload-artifact@v4
@@ -108,36 +124,30 @@ jobs:
           path: .sysroot-ci/build-env
 
       - name: Build illumos-gate and archive in OmniOS
-        uses: vmactions/omnios-vm@027e3ec08fed6fb740ab5f300c2605f9de02997a # v1.3.4
+        # v1.3.2 is the newest release whose image set includes r151046.
+        uses: vmactions/omnios-vm@d42d894b41dd58cf7e31c194709a1c0fe3d04ace # v1.3.2
         with:
           release: r151046
           sync: rsync
-          cache-after-prepare: true
           prepare: |
             envdir="$GITHUB_WORKSPACE/.sysroot-ci/build-env"
-            core="$envdir/omnios-r151046-core.p5p"
-            extra="$envdir/omnios-r151046-extra.p5p"
-
-            test -s "$core"
-            test -s "$extra"
-            pkg set-publisher -G '*' -M '*' omnios
-            if pkg publisher extra.omnios >/dev/null 2>&1; then
-              pkg set-publisher -G '*' -M '*' extra.omnios
-            fi
-            set +e
-            xargs pkg install --accept --no-refresh -g "$core" -g "$extra" \
-              < "$envdir/requested.fmris"
-            status=$?
-            set -e
-            if [ "$status" -ne 0 ] && [ "$status" -ne 4 ]; then
-              exit "$status"
-            fi
-            pkg list -Hv $(cat "$envdir/requested-packages.txt") | \
-              awk '{ print $1 }' | sort > "$envdir/requested-installed.fmris"
-            diff -u "$envdir/requested.fmris" "$envdir/requested-installed.fmris"
+            OMNIOS_TOOLCHAIN_DENY_NEW_BE=1 \
+              scripts/install-omnios-toolchain.sh "$envdir"
           run: |
             set -eu
-            scripts/build-omnios-sysroot.sh -r 20231226 -w /tmp/illumos-sysroot-build -j 4
+            OMNIOS_TOOLCHAIN_DIR="$PWD/.sysroot-ci/build-env" \
+            ILLUMOS_SYSROOT_REQUIRE_LOCKED_TOOLCHAIN=1 \
+            ILLUMOS_SYSROOT_GATE_ONLY=1 \
+              scripts/build-omnios-sysroot.sh -r 20231226 \
+              -w "$PWD/.sysroot-ci/gate-work" -j 4
+
+            # Rust is introduced only after the locked gate output exists.
+            pkg set-publisher -g https://pkg.omnios.org/r151046/core omnios
+            pkg set-publisher -g https://pkg.omnios.org/r151046/extra \
+              extra.omnios
+            pkg install --accept ooce/developer/rust
+            gmake archive RELEASE=20231226 \
+              ILLUMOS_PKGREPO="$PWD/.sysroot-ci/gate-work/illumos-gate/packages/i386/nightly-nd/repo.redist"
 
       - name: Upload full build archive
         uses: actions/upload-artifact@v4
