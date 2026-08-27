@@ -864,6 +864,12 @@ die "usage: $0 EPOCH ROOT...\n"
 
 sub normalize_pyc {
 	my ($path) = @_;
+	my @metadata = stat($path);
+	die "stat $path: $!\n" unless @metadata;
+	my $mode = $metadata[2] & 07777;
+	my $made_writable = !($mode & 0200);
+	chmod($mode | 0200, $path) == 1 or die "chmod $path: $!\n"
+	    if $made_writable;
 	open(my $file, "+<", $path) or die "open $path: $!\n";
 	binmode($file);
 	my $magic;
@@ -871,6 +877,8 @@ sub normalize_pyc {
 	seek($file, 4, 0) or die "seek $path: $!\n";
 	print {$file} pack("V", $epoch) or die "write timestamp $path: $!\n";
 	close($file) or die "close $path: $!\n";
+	chmod($mode, $path) == 1 or die "restore mode $path: $!\n"
+	    if $made_writable;
 }
 
 sub normalize_javadoc {
@@ -918,9 +926,17 @@ sub normalize_javadoc {
 	my $normalized = join("", @output);
 	return if $normalized eq $html;
 
+	my @metadata = stat($path);
+	die "stat $path: $!\n" unless @metadata;
+	my $mode = $metadata[2] & 07777;
+	my $made_writable = !($mode & 0200);
+	chmod($mode | 0200, $path) == 1 or die "chmod $path: $!\n"
+	    if $made_writable;
 	open(my $out, ">", $path) or die "open $path: $!\n";
 	print {$out} $normalized or die "write $path: $!\n";
 	close($out) or die "close $path: $!\n";
+	chmod($mode, $path) == 1 or die "restore mode $path: $!\n"
+	    if $made_writable;
 }
 
 for my $root (@ARGV) {

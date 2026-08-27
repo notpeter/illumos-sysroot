@@ -229,19 +229,26 @@ toward the acceptance criteria.
   Rust illumos link requirements. Toolchain repositories may supply build
   tools only; they must never supply the sysroot's `system/*` payload.
 
-## Candidate Java-free native build path
+## Candidate Java- and closed-bins-free native build path
 
 The current release proof deliberately uses a Java-enabled full nightly.  A
 follow-on implementation may make a deliberately scoped native build the
 primary source-to-sysroot path while retaining the full nightly as an
-independent regression oracle:
+independent regression oracle.  Removing the JDK and removing closed bins are
+separate dependency reductions: the first comes from skipping Java-consuming
+commands, while the second comes from excluding the closed payload and proving
+that no selected native build target consumes it.
 
 ```text
-Java-enabled full nightly -> repo.redist --+
-                                           +-> canonical selected payload
-Java-free scoped build ----> proto area ---+          |
-                                                      v
-                                         common archive assembly -> sysroot
+full nightly (JDK + closed bins) -> repo.redist --+
+                                                   +-> profile selection
+scoped build (no JDK/closed bins) -> proto area ---+   + common exclusions
+                                                              |
+                                                              v
+                                                   canonical selected payload
+                                                              |
+                                                              v
+                                                   common archive assembly
 ```
 
 The equivalence boundary is the selected sysroot payload, not the complete
@@ -253,6 +260,20 @@ package selections and path exclusions.  Regular-file contents and link
 targets must match, as must the four shim inputs and the ordered action stream
 used for archive assembly.
 
+For the 20231226 profile, the current archive contains four direct closed-bin
+payloads proposed for common exclusion:
+
+- `usr/lib/libike.so.1`;
+- `usr/lib/amd64/libike.so.1`;
+- `usr/lib/raidcfg/mpt.so.1`; and
+- `usr/lib/raidcfg/amd64/mpt.so.1`.
+
+These exclusions must be applied after package selection to both producer
+paths.  The full nightly's `repo.redist` may still contain the objects, but
+they must not enter its canonical selected-payload map or final archive.  Each
+older profile must be inspected independently rather than assuming that its
+closed payload actions and dependency graph are identical to 20231226.
+
 The scoped path must:
 
 - start from the same pinned gate build head and use the same compiler,
@@ -262,6 +283,9 @@ The scoped path must:
   dependency closure of the selected libraries into a clean proto area;
 - skip Java-consuming commands rather than satisfy them with distribution
   binaries, and never source a selected `system/*` payload from the builder;
+- avoid staging closed bins and prove from a clean build that the selected
+  native dependency closure does not require `libike`, the `raidcfg` `mpt`
+  plugin, or another closed-bin object merely omitted from the final archive;
 - express the selected proto contents as the same canonical action set used
   for the nightly extraction.  This may be a generated aggregate manifest, a
   minimal IPS repository, or another checked and deterministic representation;
@@ -274,19 +298,23 @@ Qualification should proceed in this order:
 
 1. Derive a canonical selected-payload map from a clean full nightly.  Record
    each path's action type, content digest or link target, and originating
-   package action after exclusions.
-2. Discover and document the smallest clean native build closure that
+   package action before and after the common exclusions.  Inventory and
+   classify closed payload actions independently for all three profiles.
+2. Verify that excluding `libike` and `raidcfg/mpt` removes no required public
+   headers, default linker inputs, library dependencies, or runtime objects
+   used by the sysroot acceptance tests.
+3. Discover and document the smallest clean native build closure that
    populates every path in that map.  Do not start from a proto area populated
    by a previous nightly.
-3. Compare the scoped proto and nightly repository at the selected-payload
+4. Compare the scoped proto and nightly repository at the selected-payload
    boundary before archive creation.  A missing, additional, or byte-different
    selected object is a build-path failure.
-4. Assemble both candidates with identical profile inputs and require the
+5. Assemble both candidates with identical profile inputs and require the
    uncompressed tar and compressed archive hashes to match byte for byte.
-5. Repeat the scoped build twice from clean paths and on an independent
+6. Repeat the scoped build twice from clean paths and on an independent
    builder, then run the same content, native-link, and illumos runtime tests
    required of the nightly-produced archive.
-6. Only after all three profiles satisfy those checks may the scoped path
+7. Only after all three profiles satisfy those checks may the scoped path
    replace the full nightly as the release-producing path.
 
 Repository differences outside the selected payload remain useful nightly
@@ -294,23 +322,24 @@ regression evidence, but are not a sysroot mismatch.  Conversely, identical
 extracted trees with different tar hashes indicate a canonical assembly or
 action-ordering defect and do not satisfy equivalence.
 
-If qualified, the release lock can be split into a Java-free native-build lock
-and a separate full-nightly regression lock that retains the JDK.  The full
-nightly should continue periodically and before intentional payload changes;
-its broad build and packaging result remains an independent check, but Java
-availability would no longer gate ordinary sysroot production.
+The common exclusions change the payload and archive hash relative to any
+profile that previously included these files.  Such a profile must receive a
+new release identity; cross-path equality must never be used to reuse an older
+identity for a different payload.
 
-Removing closed bins is a separate qualification.  The scoped path may omit
-them only after the canonical action map excludes the known closed payloads
-and a clean dependency trace proves that no selected native object uses them
-at build time.  Success in removing the JDK alone does not establish that
-proof.
+If qualified, the release lock can be split into a Java- and closed-bins-free
+native-build lock and a separate full-nightly regression lock that retains
+both the JDK and closed bins.  The full nightly should continue periodically
+and before intentional payload changes.  Its broad build and packaging result
+remains an independent check, but Java and closed-bins availability would no
+longer gate ordinary sysroot production.
 
 ## Deferred and out of scope
 
-- The candidate Java-free native path above is follow-on work.  It does not
-  replace the Java-enabled nightly requirements or current acceptance criteria
-  until it has passed the stated cross-path qualification for all profiles.
+- The candidate Java- and closed-bins-free native path above is follow-on
+  work.  It does not replace the full-nightly requirements or current
+  acceptance criteria until it has passed the stated cross-path qualification
+  for all profiles.
 - zlib, OpenSSL, and the C++ runtime are not part of these releases. Consumers
   must provide them separately.
 - The project guarantees reproducibility of the sysroot payload, not every
