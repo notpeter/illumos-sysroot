@@ -1,37 +1,166 @@
-# Reproducibility notes
+# Reproducibility model and validation
 
-This repository now has three separate build paths:
+The release goal is stronger than deterministic tar creation: the selected
+illumos source, complete gate output repository, sysroot payload, shims, and
+archive envelope must all be reproducible from recorded public inputs.
 
-1. Archive assembly from an existing IPS repository.
-2. The full illumos-gate build that produces the official `repo.redist`.
-3. Portable archive assembly from a fixed `repo.redist` plus prebuilt shim
-   objects.
+[`new-plan.md`](new-plan.md) defines the required releases and acceptance
+tests. This document describes the mechanisms already implemented, the proof
+obtained so far, and the remaining boundary between development evidence and a
+repeatable release process.
 
-The first path is exercised by CI.  The third path has been validated locally by
-assembling the same `repo.redist` and prebuilt shim inputs twice on Linux and
-confirming byte-identical `.tar.gz` output.
+## Reproducibility boundary
 
-## Archive assembly
+A release is a function of these pinned inputs:
 
-The archive assembly path needs an illumos host with:
+- the vanilla illumos-gate base and any `sysroot/<DATE>` build-only backports;
+- the stock closed-bins archive;
+- the primary compiler, JDK, onbld tools, GNU make, and their runtime closure;
+- the nightly env file and release profile;
+- the sysroot build scripts and `mf2tar` source or binary;
+- the four shim inputs;
+- `SOURCE_DATE_EPOCH`.
 
-* `gmake`
-* a C compiler and the illumos link-editor
-* Rust and Cargo for `mf2tar`
-* an IPS repository root containing `file/` and `pkg/`
+The build host is an execution environment, not a source of payload. In
+particular, the archive must not contain prebuilt `system/*` files from OmniOS,
+Helios, or another distribution.
 
-The direct command is:
+There are two independent deterministic stages:
+
+1. **Gate output:** compile the pinned gate and produce a byte-identical
+   `packages/i386/nightly-nd/repo.redist`.
+2. **Archive assembly:** select the profile packages, add the four shims, and
+   emit a byte-identical tar and gzip stream.
+
+An identical archive from two different `repo.redist` trees is not enough;
+the complete repository fingerprints are also compared so nondeterminism
+outside the selected package subset remains visible.
+
+## Release status
+
+| Profile | Published comparison target | Gate/repository proof | Independent builder proof |
+| --- | --- | --- | --- |
+| `20181213` | `gwr/sysroot` v2, SHA-256 `b09f1b240421228878cae608ab0b25a905900d1d5b70032b4aba15e0e7a8edc5` | Not run with the current reproducibility layer | Not run |
+| `20210501` | official v0, SHA-256 `28d8f4f6d84331ff1e99ac3d68b917cf8174897a5c00171c5e493253eb1587f6` | Not run with the current reproducibility layer | Not run |
+| `20231226` | no published artifact | Complete repositories and archives matched | Passed on two differently named and pathed OmniOS r151046 builders using the preserved input set |
+
+The 20231226 cross-builder result covered 807 directories and 24,012 files.
+The all-file, payload, package-manifest, and parsed-action fingerprints all
+matched. Portable Linux assembly also produced the same archive:
+
+```text
+SHA-256  a043cc695630677e7005d531b096a01ab96788fd9bd95417a5b0a41ec33079a5
+```
+
+A Clang/LLD-linked smoke binary built against that archive ran on Helios and
+printed `illumos-sysroot-ok`.
+
+This proves that the 20231226 implementation can reproduce from the preserved
+development input set. It is not yet the final release contract: the
+per-release `toolchain.<DATE>.lock` files and closed-bins digests described in
+`new-plan.md` are not checked in, and the older profiles have not passed the
+same matrix.
+
+## Normalization implemented for 20231226
+
+The gate build uses `SOURCE_DATE_EPOCH` only when a release profile supplies
+it. Reproducibility mode applies the following targeted transformations:
+
+| Source of variation | Normalization |
+| --- | --- |
+| absolute gate checkout path in GCC output | compiler wrappers add `-ffile-prefix-map=$ILLUMOS_SYSROOT_GATE_DIR=.` |
+| DTrace probe suffixes | a fixed suffix derived from `SOURCE_DATE_EPOCH` |
+| DTrace `ftok()` keys | a small preload object returns the fixed release key |
+| DTrace helper pointers | serialized `DOF_SECT_ACTDESC.dofa_uarg` fields are zeroed |
+| DTrace host identity | DOF `utsname.nodename` is replaced with `illumos-sysroot` |
+| JAR entry times and order | the JAR wrapper normalizes mtimes and repacks entries in deterministic order |
+| SLP manifest build time | bracketed `Implementation-Version` timestamps are set from the release epoch |
+| SQLite2 SMF seed databases | deterministic allocation state, final `VACUUM`, and a fixed schema cookie |
+| pyzfs message catalog order | `xgettext` input is sorted under `LC_ALL=C` |
+| Python bytecode filenames | `compileall -s` stores paths relative to the proto root |
+| IPS publication and catalog time | package tools run with a fixed UTC clock derived from the release epoch |
+| Python hash iteration in IPS tools | controlled entry points and deterministic ordering |
+| IPS search-index manifest IDs | FMRIs are sorted by canonical string before indexing |
+| `libssp_ns.a` metadata | deterministic archive creation in reproducibility mode |
+| tar ownership and time | `mf2tar` writes uid/gid 0 and the release epoch |
+| gzip header | `gzip -n` omits variable name and timestamp fields |
+
+These transformations are intended to remove host, path, process, and
+wall-clock identity without changing the API or ABI represented by the release.
+When generalizing them to 2018 and 2021, apply only transformations relevant to
+those gate versions and inspect every patch against the pinned source.
+
+## Complete repository comparison
+
+On an appropriately provisioned OmniOS builder, run:
+
+```sh
+scripts/check-repo-redist-repro.sh \
+    -r 20231226 \
+    -w /path/to/clean-work \
+    -o /path/to/evidence \
+    -j 4
+```
+
+The default uses different absolute directories for run 1 and run 2. `-s`
+reuses one path, deleting it between runs; that is a diagnostic mode and does
+not replace the different-path test.
+
+The comparison covers:
+
+- `paths.all` and `paths.files`;
+- `files.sha256` for every repository file;
+- `file-payloads.sha256` for content-addressed IPS payloads;
+- `pkg-manifests.sha256`;
+- `payload-actions.tsv`;
+- the final sysroot archive checksum.
+
+The script preserves each run's package manifests and repository metadata
+under the evidence directory. A successful run leaves no mismatch `.diff`
+files.
+
+The current implementation is proven for 20231226. Before using `-r 20181213`
+or `-r 20210501`, first remove the script's hard-coded gcc10/r151046/JDK11
+assumptions as required by [`plan.md`](plan.md).
+
+## Archive assembly from a fixed repository
+
+`mf2tar` expects an IPS publisher root containing `file/` and `pkg/`. A normal
+`pkgrecv` destination is one level higher, so pass
+`$repo/publisher/$publisher`, not `$repo`.
+
+On illumos, build shims and assemble directly:
 
 ```sh
 gmake archive RELEASE=20231226 \
-    ILLUMOS_PKGREPO=/path/to/repository/publisher/root
+    ILLUMOS_PKGREPO=/path/to/repo.redist
 ```
 
-`ILLUMOS_PKGREPO` should point at the directory that contains `file/` and
-`pkg/`.  For a repository created with `pkgrecv`, that is usually
-`$repo/publisher/$publisher`, not `$repo`.
+With fixed shim objects, assembly can run on Linux or another non-illumos host:
 
-For smoke testing against the packages installed in the current image:
+```sh
+scripts/extract-prebuilt-shims.sh \
+    /path/to/reference-sysroot.tar.gz \
+    /path/to/prebuilt-shims
+
+scripts/assemble-sysroot-from-repo.sh \
+    /path/to/repo.redist \
+    /path/to/prebuilt-shims
+```
+
+The prebuilt directory must contain:
+
+- `usr/lib/libgcc_s.so.1`;
+- `usr/lib/amd64/libgcc_s.so.1`;
+- `usr/lib/libssp.so.0.0.0`;
+- `usr/lib/amd64/libssp.so.0.0.0`.
+
+Portable assembly proves deterministic packaging of fixed files. It does not
+prove the provenance or reproducibility of those files.
+
+## Installed-package smoke path
+
+For a quick assembly test on illumos:
 
 ```sh
 repo=/tmp/sysroot-repo
@@ -39,536 +168,52 @@ pkgroot=$(RELEASE=20231226 scripts/receive-installed-packages.sh "$repo")
 gmake archive RELEASE=20231226 ILLUMOS_PKGREPO="$pkgroot"
 ```
 
-This proves the archive tooling, shims, profile selection, and package
-manifest walk.  It does not prove that the archive contents correspond to the
-selected 2023-12-26 illumos-gate commit unless the input repository came from
-that gate build.
-
-## Portable archive assembly
-
-The `repo.redist` to sysroot step does not inherently require illumos.  The
-illumos-specific part is building the shim shared objects.  If those shim
-objects are treated as fixed inputs, archive assembly can run on Linux or other
-non-illumos hosts with Rust, Cargo, `gmake`, `gzip`, and `tar`.
-
-Extract shim objects from an existing sysroot archive:
-
-```sh
-scripts/extract-prebuilt-shims.sh \
-    output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz \
-    /tmp/illumos-sysroot-shims
-```
-
-Assemble from a fixed `repo.redist`:
-
-```sh
-scripts/assemble-sysroot-from-repo.sh \
-    /path/to/packages/i386/nightly-nd/repo.redist \
-    /tmp/illumos-sysroot-shims
-```
-
-This runs:
-
-```sh
-gmake archive PREBUILT_SHIMS=true \
-    PREBUILT_SHIM_DIR=/tmp/illumos-sysroot-shims \
-    ILLUMOS_PKGREPO=/path/to/packages/i386/nightly-nd/repo.redist
-```
-
-The prebuilt shim directory must contain:
-
-* `usr/lib/libgcc_s.so.1`
-* `usr/lib/amd64/libgcc_s.so.1`
-* `usr/lib/libssp.so.0.0.0`
-* `usr/lib/amd64/libssp.so.0.0.0`
-
-This makes it possible to reproduce the final sysroot archive from preserved
-`repo.redist` and preserved shim inputs without booting an illumos builder.
-
-Local validation from fixed inputs produced byte-identical archives across two
-runs:
-
-```text
-c86cb4023396011f241e9b3b3598d9a66a38f53c43d13e7590a28be9736d5141  illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz
-672713b70a2968e7f4379b1d148f0cb2d90c19125cda320c54d77a84f2634abd  decompressed tar stream
-```
-
-## Deterministic archive metadata
-
-`mf2tar` writes ustar archive entries directly. For reproducible release
-archives, it normalizes:
-
-* tar entry uid/gid to `0`
-* tar entry mtime to `SOURCE_DATE_EPOCH`
-* gzip metadata with `gzip -n`
-
-Each release profile sets `SOURCE_DATE_EPOCH` to the selected `GATE_COMMIT`
-committer timestamp by default. The environment can still override it:
-
-```sh
-SOURCE_DATE_EPOCH=1703608857 gmake archive RELEASE=20231226 \
-    ILLUMOS_PKGREPO=/path/to/repository/publisher/root
-```
-
-Custom builds without `SOURCE_DATE_EPOCH` continue to use the current time.
-Archive member order is the deterministic manifest/package order emitted by
-the selected IPS repository plus the explicitly listed shim entries.
-
-## Validated smoke result
-
-On 2026-08-21, this was validated on a Helios 3 VM at
-`peter@192.168.122.29` using exact installed Helios package FMRIs:
-
-```sh
-RELEASE=20231226 scripts/receive-installed-packages.sh \
-    /tmp/illumos-sysroot-20260821T201246Z/repo-script2
-gmake archive RELEASE=20231226 \
-    ILLUMOS_PKGREPO=/tmp/illumos-sysroot-20260821T201246Z/repo-script2/publisher/helios
-```
-
-Result:
-
-* `output/illumos-sysroot-i386-20231226-ae676b1204fb-v1.tar.gz`
-* size: 39.3 MiB
-* contains `usr/include`
-* contains the `libgcc_s` and `libssp` shim libraries for `i386` and `amd64`
-* excludes `usr/bin`, `usr/sbin`, `usr/share`, `usr/ccs`, `etc`, `var`, `bin`,
-  and `sbin`
-* `pvs -dsv` shows the `libgcc_s` shims advertise `GCC_4.8.0`
-
-Because the input packages were from Helios 3, this is a smoke artifact only.
-
-## vmactions path
-
-`.github/workflows/omnios-archive.yml` runs the same smoke assembly under
-`vmactions/omnios-vm@027e3ec08fed6fb740ab5f300c2605f9de02997a`
-(`v1.3.4`) with `release: r151046`.
-
-The workflow uses the installed r151046 package FMRIs as input, so it is a CI
-check for archive assembly.  It is not the official release build until it is
-changed to consume a `repo.redist` produced from illumos-gate commit
-`ae676b1204fb703d5b394f9f8d947ef6210f3c3f`.
-
-For full illumos-gate builds, the workflow uses a two-stage OmniOS package
-setup:
-
-1. `build-env` boots OmniOS with live package access, creates a clean
-   temporary IPS image, installs the build packages into that image, records
-   that clean-image FMRI closure, and preserves those payloads in `.p5p` IPS
-   package archives.
-2. `full-gate-build` downloads those package archives, removes live publisher
-   origins from the VM image, installs the exact requested build package FMRIs
-   from the local archives, and verifies the requested package FMRIs before
-   building.
-
-This keeps the release build from depending on live OmniOS package repositories
-after the package archive artifact has been generated.
-
-The archived payloads are verified by creating another temporary IPS image and
-dry-running an install of the exact requested package FMRIs using only the
-generated package archives.  `install.fmris` records the full clean-image
-closure available in those archives; `requested.fmris` records the exact build
-package install targets used by the workflow.
-
-The package archive artifact includes:
-
-* `omnios-r151046-core.p5p`
-* `omnios-r151046-extra.p5p`
-* `install.fmris`
-* `requested.fmris`
-* `host-before.fmris`
-* `scratch-publishers.txt`
-* `replay-verify.txt`
-* package archive package lists and manifests
-* `SHA256SUMS`
-
-This does not yet make the entire VM run offline.  The workflow still relies on
-GitHub/vmactions to provide the VM image and source checkout, the builder still
-fetches illumos-gate from Git, and `mf2tar` still uses Cargo normally.  Cargo
-dependency vendoring is intentionally out of scope for now.
-
-## `repo.redist` reproducibility checks
-
-Use `scripts/check-repo-redist-repro.sh` to build illumos-gate twice and compare
-normalized fingerprints of each resulting `repo.redist`:
-
-```sh
-scripts/check-repo-redist-repro.sh -r 20231226 -w /path/to/work -o /path/to/out -j 4
-```
-
-The comparison writes:
-
-* `paths.all`
-* `paths.files`
-* `files.sha256`
-* `file-payloads.sha256`
-* `pkg-manifests.sha256`
-* `payload-actions.tsv`
-* one `.diff` file per mismatch
-
-On 2026-08-23, two clean builds in different absolute work directories on the
-local OmniOS r151046 VM both completed successfully, but the `repo.redist`
-fingerprints differed:
-
-```text
-work: /home/peter/ws/repo-redist-repro-20260823T005422
-out:  /home/peter/ws/repo-redist-repro-output-20260823T005422
-
-run1 all-files-sha256:      9e66cf5abd100972226f63d14522b715125498a1b46caf3361240e7740984fcf
-run2 all-files-sha256:      5da277ff6f167eee9f64e4071d0d26daa88874b3da48f20eb1359e78258b10e5
-run1 file-payloads-sha256:  50e7d67a1f137272b0ba853f432093c27fb7fbe46f8a569e22f25c831f2625d6
-run2 file-payloads-sha256:  766b680fff8b31a917b9bd02310cf2352aa641bf1cc69d6da68de96ce4540855
-```
-
-A sampled `libgss.so.1` payload embedded the absolute build directory path,
-which explains some of that mismatch.
-
-The same script supports `-s` to reuse one absolute build path and delete it
-between runs:
-
-```sh
-scripts/check-repo-redist-repro.sh -s -r 20231226 -w /path/to/work -o /path/to/out -j 4
-```
-
-On the same VM, the same-path run also completed both builds successfully, but
-`repo.redist` still differed:
-
-```text
-work: /home/peter/ws/repo-redist-repro-samepath-20260823T125413
-out:  /home/peter/ws/repo-redist-repro-samepath-output-20260823T125413
-
-run1 all-files-sha256:      4858dcc0d4537582aa1ea52139278b69e2137ce785da00421c54a4babcda8766
-run2 all-files-sha256:      4a94db7ed0cffbe53da7f96abe8e481fd6e19a98a025bf51c8384e074c7390ec
-run1 file-payloads-sha256:  3885021a10c9e3246a5e33e52e5a9e6cbce1bcf869286d3134bf17311126f7a6
-run2 file-payloads-sha256:  2e3c96672a265538d18094a451cf96cffecb864580b575419f0ba62e3402b9bb
-```
-
-Extracting the two same-path sysroot archives showed identical symlink targets
-but differing file contents.  The sysroot-relevant differences were narrowed to
-`libc` outputs and `libssp_ns.a`, including:
-
-* `lib/amd64/libc.so.1`
-* `lib/libc.so.1`
-* `usr/lib/libc/libc_hwcap*.so.1`
-* `usr/lib/amd64/libssp_ns.a`
-* `usr/lib/libssp_ns.a`
-
-One `libc.so.1` difference is in generated DTrace symbol names such as
-`$dtrace7375612.mutex_lock_impl` versus
-`$dtrace7375146.mutex_lock_impl`.  So fixed absolute paths are not enough for
-strict reproducibility.
-
-A follow-up same-path run with fixed IPS publication timestamps and deterministic
-`libssp_ns.a` archive creation still differed:
-
-```text
-work: /home/peter/ws/repo-redist-repro-patched-samepath-20260823T204200
-out:  /home/peter/ws/repo-redist-repro-patched-samepath-output-20260823T204200
-
-run1 archive sha256:        57d546dc9899dadac1ec2132c4687ea64722311cc30119932d59cb020f480987
-run2 archive sha256:        b9f13a838748bfd1a291857d1fe82897eec8394f7ff351cb3b07fd49a8b1d953
-run1 all-files-sha256:      c0888a612c119a59620e2ab7422761beeca29334e321454b827a69dd77cb7c1c
-run2 all-files-sha256:      ad5b898f8213ff346e401853d126ceddd08664f2470c3a9ca226c7e481020c5d
-run1 file-payloads-sha256:  5c1b79aa975ca59ad345bb2068b3d9532a7ac1c32dbd4eeb0872d6240f092e35
-run2 file-payloads-sha256:  69383186dc59d204c9456e19e4a48043be104314da19f702dd35cfc1bc47cd53
-run1 pkg-manifests-sha256:  2c101aec41444aab4c7054c05342803592986163ddc4eae57cd33ea2fafeac29
-run2 pkg-manifests-sha256:  9b7482b52bc4a4bc901666b97cb26e1410bf5a2f90938b61c6816215a9a86744
-```
-
-For the sysroot archive itself, the remaining file-content differences were
-only `libc` and its hwcap variants:
-
-* `lib/amd64/libc.so.1`
-* `lib/libc.so.1`
-* `usr/lib/libc/libc_hwcap*.so.1`
-
-`libssp_ns.a` no longer differed.  The remaining `libc` bytes were again only
-the DTrace-generated `$dtraceNNNNNNN` symbol suffix.  Normalizing those suffixes
-to a fixed seven-digit value made the two extracted `lib/libc.so.1` files
-byte-identical in a targeted test.  `scripts/build-omnios-sysroot.sh` now
-exports a `DTRACE` wrapper for nightly builds so host `dtrace -G` output objects
-are normalized before they are linked.
-
-A later same-path run with the `DTRACE` wrapper completed both gate builds and
-produced byte-identical sysroot archives:
-
-```text
-work: /home/peter/ws/repo-redist-repro-dtracewrap3-samepath-20260823T233000
-out:  /home/peter/ws/repo-redist-repro-dtracewrap3-samepath-output-20260823T233000
-
-run1 archive sha256: e6c1493513788da5346e2cad1dd0ff59c27bce4fc60c9bd26b7576649feba334
-run2 archive sha256: e6c1493513788da5346e2cad1dd0ff59c27bce4fc60c9bd26b7576649feba334
-entries:             2629
-```
-
-The complete `repo.redist` still differed.  The remaining full-repository
-differences included wall-clock catalog update names
-(`catalog/update.20260823T23Z.C` versus `catalog/update.20260824T00Z.C`) and
-manifest or payload differences in packages outside the archive's explicit
-package set:
-
-* `SUNWcs`
-* `consolidation/osnet/osnet-message-files`
-* `developer/build/onbld`
-* `developer/dtrace`
-* `library/libadt_jni`
-* `service/network/slp`
-* `service/resource-pools/poold`
-* `system/dtrace/tests`
-
-Follow-up payload action mapping narrowed the remaining content differences to
-these classes:
-
-* Java archives:
-  * `usr/share/lib/slp/slpd.jar`
-  * `usr/share/lib/slp/slp.jar`
-  * `usr/share/lib/java/dtrace.jar`
-  * `usr/lib/pool/JPool.jar`
-  * `opt/SUNWdtrt/tst/common/java_api/test.jar`
-  * `opt/SUNWdtrt/lib/java/jdtrace.jar`
-  * `usr/lib/audit/Audit.jar`
-* SMF seed repositories:
-  * `lib/svc/seed/global.db`
-  * `lib/svc/seed/nonglobal.db`
-  * `usr/sadm/install/miniroot.db`
-* Generated message file:
-  * `usr/lib/locale/C/LC_MESSAGES/SUNW_OST_OSLIB.po`
-* DTrace ustack test executables:
-  * `opt/SUNWdtrt/tst/i386/ustack/tst.helper.exe`
-  * `opt/SUNWdtrt/tst/i386/ustack/tst.annotated.exe`
-
-The Java archive differences were confirmed to include build wall-clock ZIP
-entry timestamps.  The OmniOS r151046 JDK `jar` does not support a `--date`
-option, so `scripts/build-omnios-sysroot.sh` now creates a reproducible `jar`
-wrapper when `SOURCE_DATE_EPOCH` is set and patches `usr/src/Makefile.master`
-to use it.  The wrapper runs the real JDK `jar`, extracts the resulting
-archive, sets all entry mtimes to `SOURCE_DATE_EPOCH`, and repacks with
-`zip -X` in deterministic order.  It was smoke-tested on OmniOS for the legacy
-`cf`, `cmf`, and `cfm` option forms used by illumos-gate and produced
-byte-identical output across repeated runs.
-
-A full same-path run with the `jar` wrapper initially exposed a wrapper bug:
-the normalized archive was written under `/tmp`, and replacing a workspace JAR
-could fail with `Cross-device link`.  The wrapper now creates its temporary
-directory next to the target JAR before replacing it.
-
-A follow-up same-path run with the fixed `jar` wrapper completed both gate
-builds and produced byte-identical sysroot archives:
-
-```text
-work: /home/peter/ws/repo-redist-repro-jarwrap2-samepath-20260824T025128Z
-out:  /home/peter/ws/repo-redist-repro-jarwrap2-samepath-output-20260824T025128Z
-
-run1 archive sha256: 355223e8838ae8d26ba859f13066076b7a823b9dfde5132e47a56ded233a9310
-run2 archive sha256: 355223e8838ae8d26ba859f13066076b7a823b9dfde5132e47a56ded233a9310
-entries:             2629
-```
-
-The full `repo.redist` still differed.  Compared with the previous run, the
-`jar` wrapper removed the `developer/dtrace`, `library/libadt_jni`,
-`service/resource-pools/poold`, and most `system/dtrace/tests` Java archive
-payload differences.  Remaining payload differences were:
-
-* `lib/svc/seed/global.db`
-* `lib/svc/seed/nonglobal.db`
-* `usr/sadm/install/miniroot.db`
-* `usr/lib/locale/C/LC_MESSAGES/SUNW_OST_OSLIB.po`
-* `opt/SUNWdtrt/tst/i386/ustack/tst.helper.exe`
-* `opt/SUNWdtrt/tst/i386/ustack/tst.annotated.exe`
-* `usr/share/lib/slp/slp.jar`
-* `usr/share/lib/slp/slpd.jar`
-
-The remaining SLP JAR differences were traced to manifest content, not ZIP
-entry metadata:
-
-```text
-Implementation-Version: [Mon Aug 24 03:45:16 UTC 2026]
-```
-
-The wrapper now also normalizes bracketed `Implementation-Version` timestamp
-values to the `SOURCE_DATE_EPOCH` date string.  This was validated with a
-targeted OmniOS wrapper test that produced byte-identical JARs from manifests
-with different wall-clock `Implementation-Version` values.
-
-A full same-path follow-up completed with the manifest normalization enabled:
-
-```text
-work: /home/peter/ws/repo-redist-repro-slpmanifest-samepath-20260824T042145Z
-out:  /home/peter/ws/repo-redist-repro-slpmanifest-samepath-output-20260824T042145Z
-
-run1 archive sha256: b9aaa56ae5b08f3b116d3361dd20ce662c75bd70176e56c793e77ee6b7b4c8b1
-run2 archive sha256: b9aaa56ae5b08f3b116d3361dd20ce662c75bd70176e56c793e77ee6b7b4c8b1
-entries:             2629
-```
-
-Both SLP JAR payloads matched in that run.  The remaining payload differences
-were the three SQLite2 seed databases, the pyzfs message catalog, and the two
-DTrace ustack test executables listed above.  Package manifest differences
-remained in `SUNWcs`, `consolidation/osnet/osnet-message-files`,
-`developer/build/onbld`, and `system/dtrace/tests`.  The comparison script now
-preserves each run's complete `pkg/` manifest tree so future runs can show the
-exact `developer/build/onbld` metadata difference instead of only its hash.
-
-The remaining payload classes have now been traced and narrowly tested:
-
-* The seed files are SQLite 2.1 databases.  Their schemas, table contents,
-  rowids, and root pages matched even though their physical bytes did not.
-  Directly replacing the four-byte schema cookie was insufficient, and even
-  repeated `VACUUM` operations were nondeterministic with the stock native
-  SQLite2 writer.  Reproducibility-only native SQLite changes now use a fixed
-  random seed and zero raw allocations, freed page regions, and rounded cell
-  padding.  A generated native tool runs `VACUUM` after each final seed update
-  and writes the `SOURCE_DATE_EPOCH` as its schema cookie.  The tool compiled
-  through the patched seed makefile and made all three preserved run1/run2
-  database pairs byte-identical.
-* `SUNW_OST_OSLIB.po` contained the same messages in a different order because
-  `usr/src/lib/pyzfs/Makefile` passed unsorted `find` output to `xgettext`.
-  Reproducibility mode now sorts that input under `LC_ALL=C`.
-* Each ustack executable differed only in the low bytes of
-  `DOF_SECT_ACTDESC.dofa_uarg`.  This is an in-process statement-descriptor
-  pointer serialized into helper DOF by the host `dtrace -G`.  The DTrace
-  wrapper now parses generated DOF and zeros only those eight-byte action
-  fields.  Applying it to both preserved executable pairs made each pair
-  byte-identical.
-* Repository refresh used the wall clock for catalog update names and catalog
-  attributes.  The generated `pkgrepo` wrapper pins Python `utcnow()` calls to
-  `SOURCE_DATE_EPOCH`.  Refreshing two identical disposable repositories at
-  different wall-clock times produced byte-identical trees.
-
-A full same-path comparison completed with the SQLite, pyzfs, DTrace DOF, and
-initial fixed-time catalog patch set:
-
-```text
-work: /home/peter/ws/repo-redist-repro-finalset-samepath-20260824T0845Z
-out:  /home/peter/ws/repo-redist-repro-finalset-samepath-output-20260824T0845Z
-
-run1 archive sha256: 6f5d144cc9add03072374081bf29e1817daacc4cd113594f08a60e77d8d93ee4
-run2 archive sha256: 6f5d144cc9add03072374081bf29e1817daacc4cd113594f08a60e77d8d93ee4
-entries:             2629
-```
-
-This eliminated every payload and package-manifest difference.  Repository
-paths, content-addressed payloads, package manifests, and parsed file actions
-all matched.  Only `catalog/catalog.attrs` and the search `index/` contents
-differed.  The remaining causes were outside the initial `pkgrepo refresh`
-wrapper:
-
-* `pkgsend create-repository` recorded the wall clock in the catalog's
-  `created` field.
-* Search index generation used Python hash-based iteration with a randomized
-  per-process hash seed, visibly changing `index/full_fmri_list` ordering and
-  all dependent offset files.
-
-Reproducibility mode now launches `pkgdepend`, `pkgsend`, and `pkgrepo` through
-shell wrappers which set `PYTHONHASHSEED=0` before Python starts and run a
-common fixed-datetime Python entry point.  All gate dependency generation,
-dependency resolution, repository creation, publication, and refresh calls use
-these wrappers.  Two repository creations separated by wall-clock time
-produced byte-identical trees with `created=20231226T164057Z`.
-
-The next full comparison exposed two narrower IPS ordering problems:
-
-* `pkgdepend resolve` produced one `developer/build/onbld` `require-any`
-  action with its two `fmri=` values in opposite orders.  The installed
-  `pkgdepend` shebang uses Python's `-E` flag, so an exported
-  `PYTHONHASHSEED` was ignored.  Invoking the script explicitly through the
-  wrapper fixed this; two parallel resolutions of all 544 copied dependency
-  manifests produced identical `developer-build-onbld.dep.res` files.
-* Once every package manifest matched, only `index/fmri_offsets.v1`,
-  `index/main_dict.ascii.v2`, and `index/manf_list.v1` differed.  IPS obtains
-  the packages requiring indexing as a set, then assigns numeric manifest IDs
-  in iteration order.  A fixed hash seed alone did not remove the influence of
-  catalog and filesystem insertion order.  The `pkgrepo` entry point now sorts
-  FMRIs by canonical string before the indexer assigns IDs.
-
-Rebuilding repositories from the preserved run-1 and run-2 package trees with
-the sorted-FMRI entry point produced byte-identical catalogs and indexes.  A
-final clean same-path comparison then passed end to end:
-
-```text
-work: /home/peter/ws/repo-redist-repro-sortedfmri-samepath-20260824T1050Z
-out:  /home/peter/ws/repo-redist-repro-sortedfmri-samepath-output-20260824T1050Z
-
-run1 archive sha256: 75ba2e7a591e955f1e948a68334abe71b83ab779b84a21b6349774e2c174d130
-run2 archive sha256: 75ba2e7a591e955f1e948a68334abe71b83ab779b84a21b6349774e2c174d130
-entries:             2629
-repo.redist:          all fingerprints match
-```
-
-The matching repository fingerprint covers 807 directories, 24,012 files,
-all content-addressed payloads, package manifests, parsed file actions,
-catalogs, and search indexes.
-
-The archive package set was unchanged and did not appear in the differing
-package manifest list:
-
-* `system/header`
-* `system/library`
-* `system/library/math`
-* `system/library/c-runtime`
-* `system/library/security/gss`
-
-### Different-path result
-
-The first follow-up using different absolute work directories found that GCC
-embedded the gate checkout path in 27 ELF payloads. After compiler path
-remapping removed those differences, another clean run produced identical
-sysroot archives but found ten remaining Python 3.11 bytecode differences in
-the complete `repo.redist`. Python's `py_compile` had embedded each run's
-proto-root path.
-
-Reproducibility mode now selects generated GCC and G++ wrappers through
-`PRIMARY_CC` and `PRIMARY_CCC`. The wrappers pass:
-
-```text
--ffile-prefix-map=$ILLUMOS_SYSROOT_GATE_DIR=.
-```
-
-The pyzfs and pysolaris bytecode rules now use `compileall -s $(ROOT)` so their
-stored source filenames are relative to the proto root. A focused two-path
-test produced identical bytecode with this stored filename:
-
-```text
-usr/lib/python3.11/vendor-packages/zfs/allow.py
-```
-
-The final clean comparison used two different absolute work directories and
-passed end to end:
-
-```text
-work: /home/peter/ws/repo-redist-repro-strict-20260824T175609Z
-out:  /home/peter/ws/repo-redist-repro-strict-output-20260824T175609Z
-
-archive sha256:           4181ef9e071ceee12a62b99d784b7d9f7e6fd52f8732eb496c91f4f6c5535b54
-entries:                  2629
-all-files-sha256:         2157fd4a14a230eb989cd7ec37e2d412fc1ae1c05e83a3f4a6765604444e4022
-file-payloads-sha256:     b39067ddc2b26565359aa4afef0de0cda616818e1b79e573536b2759e28dab34
-pkg-manifests-sha256:     d6a3e25a6485e1277b40a72887832dee3679f42fc254f68b345c915eddc2e3fc
-payload-actions-sha256:   d73c7a4160ee0d9c258d9305d49ab52d05d816b72d79d173e1f0cfca85124a6f
-repo.redist directories:  807
-repo.redist files:        24012
-```
-
-Both runs produced every hash above, and the comparison directory contained
-no mismatch files. This proves byte-for-byte reproducibility across different
-absolute build paths on the same OmniOS r151046 VM and package environment.
-
-So, as of the final different-path run, both the produced sysroot archive and
-the complete `repo.redist` are byte-for-byte reproducible across clean absolute
-build paths in the same OmniOS package and host environment. This does not yet
-prove reproducibility across OmniOS package snapshots or host environments.
-
-## Remaining official release work
-
-To make `20231226-ae676b1204fb-v1` reproducible as an official sysroot:
-
-1. Preserve the exact OmniOS package payloads needed for the build environment.
-2. Build illumos-gate commit `ae676b1204fb703d5b394f9f8d947ef6210f3c3f` on
-   OmniOS r151046 using `env/illumos.20231226.sh`.
-3. Preserve the resulting
-   `packages/i386/nightly-nd/repo.redist` or publish a reproducible way to
-   fetch it.
-4. Run `gmake archive RELEASE=20231226` against that `repo.redist`.
-   The profile supplies `SOURCE_DATE_EPOCH=1703608857`.
-5. Validate the archive by cross-building real consumers and running binaries
-   on the oldest claimed targets.
+This validates `mf2tar`, profile selection, manifest traversal, shim creation,
+and archive-content checks. The resulting archive contains distribution
+packages installed on that host and is never a release candidate.
+
+The ordinary `archive` job in `.github/workflows/omnios-archive.yml` is this
+kind of smoke test. Its artifact name and documentation must continue to say
+so.
+
+## Per-release acceptance evidence
+
+Preserve the following for each profile:
+
+- full gate base and backport branch IDs;
+- closed-bins URL and digest;
+- `toolchain.<DATE>.lock` and all fetched package digests;
+- release profile, env file, and `SOURCE_DATE_EPOCH`;
+- both same-builder fingerprints;
+- the independent-builder fingerprints;
+- compressed and uncompressed archive hashes;
+- extracted hashes for `libssp_ns.a` and the crt objects;
+- archive member list and shim `pvs -dsv` output;
+- cross-link command and runtime smoke output;
+- comparison with the published artifact for 20181213 and 20210501.
+
+Do not claim a published artifact was reproduced merely because its contents
+look equivalent. The compressed SHA-256 must match. If it does not, compare the
+uncompressed tar, then member metadata and payload hashes, and assign a new
+canonical identity if the deterministic result is intentionally different.
+
+## Remaining gaps
+
+- Represent the 20181213 release base and pinned build-branch head separately;
+  the current profile causes the build script to check out the base without
+  its six required build commits.
+- Generalize the 20231226 reproducibility layer to the gcc7-era profiles.
+- Reconcile the 20210501 env file's JDK 11 setting with the Java-8 entry in
+  `new-plan.md` before creating its toolchain lock.
+- Replace live OmniOS publisher resolution with the per-release durable locks.
+- Record and verify stock closed-bins instead of relying on a host copy.
+- Separate the gate-only toolchain from the Rust-based archive assembler.
+- Rebuild and independently validate 20181213 and 20210501.
+- Compare both older rebuilds with their published assets.
+- Promote the cross-link/runtime smoke test into the recorded three-release
+  validation matrix.
+
+The full gate need not be rebuilt in ordinary pull-request CI. It may be a
+manual or release workflow, but it must consume immutable inputs and preserve
+its evidence. Cheap archive assembly and content checks should continue to run
+on normal changes.
