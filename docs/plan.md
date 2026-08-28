@@ -18,8 +18,8 @@ host; the two values must be recorded separately.
 
 | Profile | Release base and build source | Build environment | Publication state | Reproducibility state |
 | --- | --- | --- | --- | --- |
-| `20181213` | Base `de6af22ae73ba8d72672288621ff50b88f2cf5fd`; [`sysroot/20181213`](https://github.com/illumos/illumos-gate/tree/sysroot/20181213) build head `6265851cb0eea0e24c694164ca91635b4d414876` | Locked OmniOS r151030, gcc 4.4.4, JDK 8 package closure | [`20181213-de6af22ae73b-v2`](https://github.com/gwr/sysroot/releases/tag/20181213-de6af22ae73b-v2) is a `gwr/sysroot` prerelease; upstream publishes v1 | Exact offline requested-package and 143-FMRI runtime-closure verification passes; full reproducibility evidence is in progress |
-| `20210501` | Base `2ed5ea5a06df7f669d20d88729c625981a0de7bc`; [`sysroot/20210501`](https://github.com/illumos/illumos-gate/tree/sysroot/20210501) build head `e0b4275f346eda86b39157cd7dd3cc889a1f6988` | Locked OmniOS r151038, gcc 7, JDK 11 package closure | [`20210501-e0b4275f34-v0`](https://github.com/illumos/sysroot/releases/tag/20210501-e0b4275f34-v0) is the latest official release; deterministic rebuilds use v1 | Exact offline requested-package and 157-FMRI runtime-closure verification passes; full reproducibility evidence is in progress |
+| `20181213` | Base `de6af22ae73ba8d72672288621ff50b88f2cf5fd`; [`sysroot/20181213`](https://github.com/illumos/illumos-gate/tree/sysroot/20181213) build head `6265851cb0eea0e24c694164ca91635b4d414876` | Locked OmniOS r151030, gcc 4.4.4, JDK 8 package closure | [`20181213-de6af22ae73b-v2`](https://github.com/gwr/sysroot/releases/tag/20181213-de6af22ae73b-v2) is a `gwr/sysroot` prerelease; upstream publishes v1 | Two clean locked r151030 builds have identical complete repositories and archive bytes; the 143-FMRI closure and Helios acceptance pass; no independent r151030 builder is available |
+| `20210501` | Base `2ed5ea5a06df7f669d20d88729c625981a0de7bc`; [`sysroot/20210501`](https://github.com/illumos/illumos-gate/tree/sysroot/20210501) build head `e0b4275f346eda86b39157cd7dd3cc889a1f6988` | Locked OmniOS r151038, gcc 7, JDK 11 package closure | [`20210501-e0b4275f34-v0`](https://github.com/illumos/sysroot/releases/tag/20210501-e0b4275f34-v0) is the latest official release; deterministic rebuilds use v1 | Two clean locked r151038 builds have identical complete repositories and archive bytes; the 157-FMRI closure and Helios acceptance pass; no independent r151038 builder is available |
 | `20231226` | Stock gate commit `ae676b1204fb703d5b394f9f8d947ef6210f3c3f`; no build-backport branch | Locked OmniOS r151046, gcc 10, JDK 11 package closure | Proposed `20231226-ae676b1204fb-v1`; not an upstream release | Three corrected clean builds match across the primary and independent builders; repository and archive reproducibility plus Helios acceptance pass |
 
 The profile-pinned normalization values are:
@@ -126,35 +126,30 @@ available images do not include r151030 or r151038; the three-profile CI
 matrix therefore performs lock validation, while historical full builds run
 on locally preserved OmniOS builders.
 
-## Required implementation work
+## Implementation status
 
-Work in this order:
-
-1. Extend the profile schema to distinguish the release base from the pinned
-   build head. Correct the 2018 checkout to use build head `6265851cb0ee` while
-   retaining `de6af22ae73b` in the release identity.
-2. Generalize gate preparation and dependency checks from the 20231226
-   gcc10/r151046/JDK11 assumptions to the compiler, JDK, environment file,
-   build source, and builder selected by each profile.
-3. Fetch and verify the stock closed-bins archive for every release and record
-   its URL and digest as a build input.
-4. Define and generate the three toolchain locks, including the transitive IPS
-   runtime closure. Implement fetch, content verification, cache validation,
-   and offline installation into a clean OmniOS VM.
-5. Separate the gate-only toolchain from archive-assembly inputs. Add a guard
-   that fails if the pinned gate contains `*.rs` or `Cargo.toml`.
-6. Run same-builder double builds and independent-builder builds for all three
-   profiles. Preserve repository fingerprints, archive hashes, toolchain
-   locks, closed-bins digests, and builder identities as release evidence.
-7. Cross-link the required C smoke program against every archive and run it on
-   an appropriate OmniOS target. Verify archive contents, library symlinks,
-   crt objects, `libssp_ns.a`, and shim symbol versions.
-8. Compare 20181213-v2 and 20210501-v0 with their published artifacts and
-   classify every difference. A deterministic payload that differs from a
-   published artifact must receive a new release identity rather than silently
-   reuse the old one.
-9. Convert CI to a three-profile matrix driven by verified locked inputs. Keep
-   the installed-package assembly job explicitly labeled as a smoke test.
+1. The profile schema distinguishes release bases from build heads.  The 2018
+   build uses `6265851cb0ee` while retaining `de6af22ae73b` in its identity.
+2. Gate preparation and dependency checks are profile-driven for all three
+   compiler, JDK, environment, source, and builder combinations.
+3. Both stock closed-bins archives are URL- and digest-pinned for every
+   release.
+4. All three locks include the exact transitive IPS runtime closure and support
+   content-verified fetch, cache validation, and offline installation.
+5. Gate-only builds exclude Rust and enforce the `*.rs`/`Cargo.toml` guard;
+   archive assembly uses the separately pinned Rust input.
+6. Same-builder double builds now match for all three profiles.  Independent
+   r151046 builds match for 20231226; independent r151030 and r151038 builders
+   remain unavailable.  Complete manifests remain external release artifacts.
+7. Every final archive passes content, symlink, crt, shim, cross-link, and
+   Helios runtime checks.  `libssp_ns.a` matches for 20210501 and 20231226 and
+   is correctly absent for 20181213.
+8. The published 20181213-v2 and 20210501-v0 differences are classified under
+   their evidence files; the deterministic results use new v3 and v1 release
+   identities respectively.
+9. CI uses a three-profile lock-validation matrix and labels installed-package
+   assembly as a smoke test.  The manual hosted full build has not been run
+   from this revision.
 
 ## Acceptance criteria
 

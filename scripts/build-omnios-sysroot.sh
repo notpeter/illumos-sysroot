@@ -387,7 +387,7 @@ prepare_repro_tools() {
 	repro_tools_dir=$workdir/repro-tools
 	mkdir -p "$repro_tools_dir"
 	canonical_gate_dir=/tmp/illumos-sysroot-gate-$release
-	if [ "$release" = 20181213 ]; then
+	if [ "$release" = 20181213 ] || [ "$release" = 20210501 ]; then
 		if [ -L "$canonical_gate_dir" ]; then
 			rm -f "$canonical_gate_dir"
 		elif [ -e "$canonical_gate_dir" ]; then
@@ -864,6 +864,13 @@ die "usage: $0 EPOCH ROOT...\n"
 
 sub normalize_pyc {
 	my ($path) = @_;
+	open(my $probe, "<", $path) or die "open $path: $!\n";
+	binmode($probe);
+	my $magic;
+	read($probe, $magic, 4) == 4 or die "read magic $path: $!\n";
+	close($probe) or die "close $path: $!\n";
+	return unless unpack("H*", $magic) =~ /^(?:03f30d0a|170d0d0a)$/;
+
 	my @metadata = stat($path);
 	die "stat $path: $!\n" unless @metadata;
 	my $mode = $metadata[2] & 07777;
@@ -872,8 +879,6 @@ sub normalize_pyc {
 	    if $made_writable;
 	open(my $file, "+<", $path) or die "open $path: $!\n";
 	binmode($file);
-	my $magic;
-	read($file, $magic, 4) == 4 or die "read magic $path: $!\n";
 	seek($file, 4, 0) or die "seek $path: $!\n";
 	print {$file} pack("V", $epoch) or die "write timestamp $path: $!\n";
 	close($file) or die "close $path: $!\n";
@@ -887,6 +892,16 @@ sub normalize_javadoc {
 	local $/;
 	my $html = <$in>;
 	close($in) or die "close $path: $!\n";
+	my $original = $html;
+
+	# JDK 8 can render an intra-class method link either as method() or
+	# Class.method(), depending on hash iteration order while resolving the
+	# link.  The href identifies the method unambiguously, so use its simple
+	# name for the displayed code in both cases.
+	$html =~ s{(<a[ ]href="[^"]*\#([A-Za-z_\$][A-Za-z0-9_\$]*)[^"]*"><code>)
+	    ([A-Za-z_\$][A-Za-z0-9_\$.]*\.)?
+	    ([A-Za-z_\$][A-Za-z0-9_\$]*)(\([^<]*\)</code></a>)}
+	    {$4 eq $2 ? $1 . $2 . $5 : $1 . ($3 || "") . $4 . $5}egx;
 
 	$html =~ s{(<tbody>\n)(.*?)(</tbody>)}{
 		my ($open, $body, $close) = ($1, $2, $3);
@@ -900,7 +915,7 @@ sub normalize_javadoc {
 				$row =~ s{<tr class="(?:altColor|rowColor)">}
 				    {<tr class="COLOR">};
 			}
-			@rows = sort @rows;
+			@rows = sort { $a cmp $b } @rows;
 			for (my $i = 0; $i < @rows; $i++) {
 				my $class = $i % 2 == 0 ? "altColor" : "rowColor";
 				$rows[$i] =~
@@ -918,13 +933,13 @@ sub normalize_javadoc {
 			push @items, $line;
 			next;
 		}
-		push @output, sort @items;
+		push @output, sort { $a cmp $b } @items;
 		@items = ();
 		push @output, $line;
 	}
-	push @output, sort @items;
+	push @output, sort { $a cmp $b } @items;
 	my $normalized = join("", @output);
-	return if $normalized eq $html;
+	return if $normalized eq $original;
 
 	my @metadata = stat($path);
 	die "stat $path: $!\n" unless @metadata;
@@ -1100,7 +1115,7 @@ EOF
 		gcc) real_compiler=$gate_cc ;;
 		g++) real_compiler=$gate_cxx ;;
 		esac
-		if [ "$release" = 20181213 ]; then
+		if [ "$release" = 20181213 ] || [ "$release" = 20210501 ]; then
 			cat > "$repro_tools_dir/$compiler" <<EOF
 #!/bin/sh
 
@@ -1115,6 +1130,15 @@ while [ "\$remaining" -gt 0 ]; do
 	case "\$arg" in
 	"\$ILLUMOS_SYSROOT_GATE_DIR"/*)
 		arg="$canonical_gate_dir/\${arg#"\$ILLUMOS_SYSROOT_GATE_DIR"/}"
+		;;
+	-I"\$ILLUMOS_SYSROOT_GATE_DIR"/*)
+		arg="-I$canonical_gate_dir/\${arg#-I"\$ILLUMOS_SYSROOT_GATE_DIR"/}"
+		;;
+	-iquote"\$ILLUMOS_SYSROOT_GATE_DIR"/*)
+		arg="-iquote$canonical_gate_dir/\${arg#-iquote"\$ILLUMOS_SYSROOT_GATE_DIR"/}"
+		;;
+	-isystem"\$ILLUMOS_SYSROOT_GATE_DIR"/*)
+		arg="-isystem$canonical_gate_dir/\${arg#-isystem"\$ILLUMOS_SYSROOT_GATE_DIR"/}"
 		;;
 	esac
 	set -- "\$@" "\$arg"
@@ -1211,7 +1235,9 @@ apply_gate_repro_patches() {
 		fi
 		grep -Fq 'table = (unsigned *)calloc(ND, sizeof (*table));' \
 			"$spellin" || die "patching deterministic spell table allocation"
+	fi
 
+	if [ "$release" = 20181213 ] || [ "$release" = 20210501 ]; then
 		seed_makefile=$gate_dir/usr/src/cmd/svc/seed/Makefile
 		if ! grep -Fq "$repro_tools_dir/svccfg" "$seed_makefile"; then
 			REPRO_SVCCFG=$repro_tools_dir/svccfg perl -0pi -e '
@@ -1232,16 +1258,47 @@ apply_gate_repro_patches() {
 			    my $insert =
 				"REPRO_PROTO = $ENV{REPRO_PROTO}\n" .
 				"REPRO_PROTO_STAMP = \$(PDIR)/.repro-proto\n\n" .
-				"\$(REPRO_PROTO_STAMP): \$(PDIR)/gendeps\n" .
+				"\$(REPRO_PROTO_STAMP): stage-licenses \$(PDIR)/gendeps\n" .
 				"\t\$(REPRO_PROTO) \$(SOURCE_DATE_EPOCH) " .
 				    "\$(PKGROOT) \$(TOOLSROOT)\n" .
 				"\t\$(TOUCH) \$(@)\n\n" .
-				"\$(PUB_PKGS): stage-licenses \$(REPRO_PROTO_STAMP)\n";
+				"\$(PUB_PKGS): \$(REPRO_PROTO_STAMP)\n";
 			    s/\Q$target\E/$insert/ or die;
 			' "$pkg_makefile"
 		fi
-		grep -Fq '$(PUB_PKGS): stage-licenses $(REPRO_PROTO_STAMP)' \
+		grep -Fq '$(REPRO_PROTO_STAMP): stage-licenses $(PDIR)/gendeps' \
+			"$pkg_makefile" || die "ordering proto normalization after staging"
+		grep -Fq '$(PUB_PKGS): $(REPRO_PROTO_STAMP)' \
 			"$pkg_makefile" || die "patching proto normalization"
+
+		boot_makefiles=$gate_dir/usr/src/boot
+		for makefile in $(find "$boot_makefiles" -name 'Makefile*' -type f); do
+			if grep -Eq '^CC[[:space:]]*=[[:space:]]*\$\(GNUC_ROOT\)/bin/gcc$' \
+				"$makefile"; then
+				REPRO_CC=$repro_tools_dir/gcc perl -pi -e '
+				    s{^CC\s*=\s*\$\(GNUC_ROOT\)/bin/gcc$}
+				      {CC=\t$ENV{REPRO_CC}};
+				' "$makefile"
+			fi
+		done
+		if grep -R -Eq '^CC[[:space:]]*=[[:space:]]*\$\(GNUC_ROOT\)/bin/gcc$' \
+			"$boot_makefiles"; then
+			die "patching boot compiler wrappers"
+		fi
+
+		if [ "$release" = 20210501 ]; then
+			geniconvtbl_makefile=$gate_dir/usr/src/cmd/geniconvtbl/Makefile.com
+			if grep -Fq '$(LEX) -t $(SRCDIR)/itm_comp.l' \
+				"$geniconvtbl_makefile"; then
+				REPRO_LEX_INPUT=$canonical_gate_dir/usr/src/cmd/geniconvtbl/itm_comp.l \
+				    perl -pi -e '
+					s{\$\(LEX\) -t \$\(SRCDIR\)/itm_comp\.l}
+					  {\$(LEX) -t $ENV{REPRO_LEX_INPUT}};
+				    ' "$geniconvtbl_makefile"
+			fi
+			grep -Fq "\$(LEX) -t $canonical_gate_dir/usr/src/cmd/geniconvtbl/itm_comp.l" \
+				"$geniconvtbl_makefile" || die "patching stable lex input path"
+		fi
 	fi
 	if ! grep -q 'ILLUMOS_SYSROOT_REPRO_SQLITE' \
 		"$gate_dir/usr/src/lib/libsqlite/Makefile.com"; then

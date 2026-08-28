@@ -92,8 +92,8 @@ release acceptance boundary described above.
 
 | Profile | Published comparison target | Gate/repository proof | Independent builder proof |
 | --- | --- | --- | --- |
-| `20181213` | `gwr/sysroot` v2, SHA-256 `b09f1b240421228878cae608ab0b25a905900d1d5b70032b4aba15e0e7a8edc5` | Offline requested packages and 143-FMRI runtime closure verify; locked reruns in progress | No second r151030 builder |
-| `20210501` | official v0, SHA-256 `28d8f4f6d84331ff1e99ac3d68b917cf8174897a5c00171c5e493253eb1587f6` | Offline requested packages and 157-FMRI runtime closure verify; locked reruns in progress | No second r151038 builder |
+| `20181213` | `gwr/sysroot` v2, SHA-256 `b09f1b240421228878cae608ab0b25a905900d1d5b70032b4aba15e0e7a8edc5` | Two clean locked r151030 builds have identical complete repositories and v3 archive bytes; 143-FMRI closure and Helios checks pass | No second r151030 builder |
+| `20210501` | official v0, SHA-256 `28d8f4f6d84331ff1e99ac3d68b917cf8174897a5c00171c5e493253eb1587f6` | Two clean locked r151038 builds have identical complete repositories and v1 archive bytes; 157-FMRI closure and Helios checks pass | No second r151038 builder |
 | `20231226` | no published artifact | Three corrected clean builds have identical complete repository fingerprints and archive bytes | Matching locked builds on independent r151046 VMs |
 
 An earlier 20231226 comparison found matching repositories and archives and
@@ -109,7 +109,7 @@ it. Reproducibility mode applies the following targeted transformations:
 
 | Source of variation | Normalization |
 | --- | --- |
-| absolute gate checkout path in GCC output | compiler wrappers map debug paths; the gcc 4 profile also presents source arguments through a stable gate symlink because `-fdebug-prefix-map` does not rewrite `__FILE__` |
+| absolute gate checkout path in GCC output | compiler wrappers map debug paths; the gcc 4 and gcc 7 profiles also present source arguments and attached absolute `-I`, `-iquote`, and `-isystem` paths through release-specific stable gate symlinks because `-fdebug-prefix-map` does not rewrite `__FILE__`; the 2021 lexer input is likewise presented through the stable gate path |
 | illumos release date in ELF comments | `RELEASE_DATE` is derived from `SOURCE_DATE_EPOCH` under the C locale |
 | clone-dependent `git describe` output | profiles pin `VERSION` and use a fixed-output `BUILDVERSION_EXEC` wrapper |
 | DTrace probe suffixes | a fixed suffix derived from `SOURCE_DATE_EPOCH` |
@@ -120,8 +120,8 @@ it. Reproducibility mode applies the following targeted transformations:
 | SLP manifest build time | bracketed `Implementation-Version` timestamps are set from the release epoch |
 | SQLite2 SMF seed databases | imports use a stable canonical XML path, followed by deterministic allocation state, final `VACUUM`, and a fixed schema cookie |
 | pyzfs message catalog order | `xgettext` input is sorted under `LC_ALL=C` |
-| Python bytecode filenames and headers | `compileall -s` stores 2021/2023 paths relative to the proto root; Python 3.5 in the 2018 builder uses `compileall -d .`, then the 2018 bytecode timestamp field is set to the release epoch |
-| JDK 8 Javadoc ordering | generated table rows and simple list items are sorted before publication, with row classes reassigned after sorting |
+| Python bytecode filenames and headers | `compileall -s` stores 2021/2023 paths relative to the proto root; Python 3.5 in the 2018 builder uses `compileall -d .`; recognized legacy Python 2.7/3.5 bytecode timestamps are then set to the release epoch without modifying PEP 552 headers |
+| JDK 8 Javadoc ordering | qualified and unqualified intra-class method-link labels are canonicalized; generated table rows and simple list items are bytewise sorted before publication, with row classes reassigned after sorting |
 | 2018 spell hash tables | the table is zero-initialized before the historical bitwise population algorithm |
 | IPS publication and catalog time | package tools run with a fixed UTC clock derived from the release epoch |
 | Python hash iteration in IPS tools | controlled entry points and deterministic ordering |
@@ -244,9 +244,6 @@ canonical identity if the deterministic result is intentionally different.
 
 ## Remaining gaps
 
-- Finish the corrected double-build, repository, archive, and published-asset
-  comparisons and record their hashes under `docs/evidence/`.
-- Run the cross-link and native shim checks for the two historical profiles.
 - A second r151030 and r151038 builder is still needed for independent-builder
   proof of those profiles.
 - Preserve the large p5p kits and complete fingerprint manifests with the
